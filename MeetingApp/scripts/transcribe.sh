@@ -24,6 +24,12 @@ if [ ! -f "$MODEL" ]; then
 fi
 
 echo "Готовлю аудио…"
+
+# Длительность источника — печатаем отдельной строкой, чтобы приложение
+# могло прикинуть оставшееся время распознавания.
+DURATION=$(ffprobe -v quiet -show_entries format=duration -of csv=p=0 "$INPUT_FILE" 2>/dev/null)
+echo "DURATION_SECONDS:${DURATION:-0}"
+
 # ffmpeg одинаково работает и с видео, и с чистым аудио:
 # из видео берётся звуковая дорожка, аудио просто перекодируется в нужный формат.
 ffmpeg -y -i "$INPUT_FILE" -vn -ar 16000 -ac 1 -c:a pcm_s16le "$OUT_DIR/audio.wav" -loglevel error

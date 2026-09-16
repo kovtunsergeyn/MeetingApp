@@ -21,6 +21,17 @@ final class JobStore: ObservableObject {
     @Published var youtubeURLText: String = ""
     @Published var expandedErrorJobIDs: Set<UUID> = []
 
+    // Лог свёрнут по умолчанию — вместо него показываем прогресс текущего шага.
+    @Published var isLogExpanded: Bool = false
+    @Published var stageProgressFraction: Double? = nil
+    @Published var stageStatusText: String = ""
+
+    private var progressTimer: Timer?
+    private var stageStartDate: Date?
+    private var stageEstimatedSeconds: Double?
+    private var stageDirectFraction: Double?
+    private var stageDirectStatusText: String?
+
     func toggleErrorDetail(jobID: UUID) {
         if expandedErrorJobIDs.contains(jobID) {
             expandedErrorJobIDs.remove(jobID)
@@ -149,6 +160,94 @@ final class JobStore: ObservableObject {
         logText += "[" + stamp + "] " + line + "\n"
     }
 
+    // MARK: - Прогресс текущего шага (замена развёрнутого лога по умолчанию)
+
+    private func startStageTimer(estimatedSeconds: Double?) {
+        stageStartDate = Date()
+        stageEstimatedSeconds = estimatedSeconds
+        stageDirectFraction = nil
+        stageDirectStatusText = nil
+        updateProgressDisplay()
+
+        progressTimer?.invalidate()
+        progressTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.updateProgressDisplay() }
+        }
+    }
+
+    private func stopStageTimer() {
+        progressTimer?.invalidate()
+        progressTimer = nil
+        stageStartDate = nil
+        stageEstimatedSeconds = nil
+        stageDirectFraction = nil
+        stageDirectStatusText = nil
+        stageProgressFraction = nil
+        stageStatusText = ""
+    }
+
+    private func updateProgressDisplay() {
+        guard let start = stageStartDate else { return }
+        let elapsed = Date().timeIntervalSince(start)
+
+        if let direct = stageDirectFraction {
+            stageProgressFraction = direct
+            stageStatusText = stageDirectStatusText ?? "\(Int(direct * 100))%"
+        } else if let estimated = stageEstimatedSeconds, estimated > 0 {
+            let fraction = min(elapsed / estimated, 0.97)
+            stageProgressFraction = fraction
+            let remaining = max(estimated - elapsed, 0)
+            stageStatusText = "~" + Self.formatDuration(remaining) + " осталось"
+        } else {
+            stageProgressFraction = nil
+            stageStatusText = "идёт " + Self.formatDuration(elapsed)
+        }
+    }
+
+    static func formatDuration(_ seconds: Double) -> String {
+        let total = Int(seconds.rounded())
+        let minutes = total / 60
+        let secs = total % 60
+        if minutes > 0 {
+            return "\(minutes) мин \(secs) с"
+        }
+        return "\(secs) с"
+    }
+
+    // Вызывается из парсера вывода yt-dlp, когда встречается строка прогресса.
+    private func setDirectProgress(fraction: Double, statusText: String?) {
+        stageDirectFraction = fraction
+        stageDirectStatusText = statusText
+        updateProgressDisplay()
+    }
+
+    // Парсинг строк вида "[download]  42.3% of ... ETA 00:12".
+    private func parseYtDlpProgress(_ chunk: String) {
+        for line in chunk.components(separatedBy: .newlines) {
+            guard line.contains("%") else { continue }
+            guard let percentRange = line.range(of: #"[0-9]+\.[0-9]%"#, options: .regularExpression) else { continue }
+            let percentText = line[percentRange].dropLast()
+            guard let percent = Double(percentText) else { continue }
+            var status = String(format: "%.0f%%", percent)
+            if let etaRange = line.range(of: #"ETA [0-9:]+"#, options: .regularExpression) {
+                status += " (" + line[etaRange].replacingOccurrences(of: "ETA ", with: "осталось ") + ")"
+            }
+            setDirectProgress(fraction: percent / 100, statusText: status)
+        }
+    }
+
+    // Парсинг строки "DURATION_SECONDS:123.4", которую печатает transcribe.sh.
+    private func parseTranscribeDuration(_ chunk: String) {
+        for line in chunk.components(separatedBy: .newlines) {
+            guard line.hasPrefix("DURATION_SECONDS:") else { continue }
+            let value = line.replacingOccurrences(of: "DURATION_SECONDS:", with: "")
+                .trimmingCharacters(in: .whitespaces)
+            guard let duration = Double(value), duration > 0 else { continue }
+            let estimated = duration * selectedModel.realtimeFactor
+            stageEstimatedSeconds = max(estimated, 5)
+        }
+    }
+
     // MARK: - Добавление файлов
 
     func addFiles(_ urls: [URL]) {
@@ -179,6 +278,33 @@ final class JobStore: ObservableObject {
         job.name = name
         jobs.append(job)
         appendLog("Добавлена запись с микрофона: \(name)")
+        saveHistory()
+        startNextIfIdle()
+    }
+
+    // Прикрепляет готовый текстовый транскрипт — пропускаем распознавание речи
+    // и сразу переходим к шагу саммари.
+    func addTranscriptFile(_ url: URL) {
+        let name = url.deletingPathExtension().lastPathComponent
+        let destDir = baseDir + "/транскрипты/" + name
+        try? FileManager.default.createDirectory(atPath: destDir, withIntermediateDirectories: true)
+        let destPath = destDir + "/transcript.txt"
+        do {
+            if FileManager.default.fileExists(atPath: destPath) {
+                try FileManager.default.removeItem(atPath: destPath)
+            }
+            try FileManager.default.copyItem(atPath: url.path, toPath: destPath)
+        } catch {
+            appendLog("Не удалось скопировать транскрипт: \(error.localizedDescription)")
+            return
+        }
+
+        var job = Job(sourcePath: "")
+        job.name = name
+        job.transcriptPath = destPath
+        job.stage = .transcribed
+        jobs.append(job)
+        appendLog("Прикреплён готовый транскрипт: \(name)")
         saveHistory()
         startNextIfIdle()
     }
@@ -530,11 +656,14 @@ final class JobStore: ObservableObject {
             appendLog("── Загрузка с YouTube: \(youtubeURL)")
 
             let outDir = baseDir + "/tmp/" + job.name
+            startStageTimer(estimatedSeconds: nil)
             let result = await runScript(
                 name: "download_youtube.sh",
                 arguments: [youtubeURL, outDir],
-                jobID: jobID
+                jobID: jobID,
+                onOutputLine: { [weak self] chunk in self?.parseYtDlpProgress(chunk) }
             )
+            stopStageTimer()
 
             if cancelRequested { return }
             if pauseRequested {
@@ -568,11 +697,14 @@ final class JobStore: ObservableObject {
             appendLog("── Транскрибация: \(job.fileName)")
 
             let outDir = baseDir + "/транскрипты/" + job.name
+            startStageTimer(estimatedSeconds: nil)
             let result = await runScript(
                 name: "transcribe.sh",
                 arguments: [job.sourcePath, outDir, languageID, modelPath],
-                jobID: jobID
+                jobID: jobID,
+                onOutputLine: { [weak self] chunk in self?.parseTranscribeDuration(chunk) }
             )
+            stopStageTimer()
 
             if cancelRequested { return }
             if pauseRequested {
@@ -621,6 +753,7 @@ final class JobStore: ObservableObject {
         updateJob(jobID) { $0.stage = .summarizing; $0.lastError = nil; $0.lastErrorDetail = nil }
         appendLog("── Саммари и сохранение (\(destinationsLabel(destinations))): \(job.fileName)")
 
+        startStageTimer(estimatedSeconds: nil)
         let result = await runScript(
             name: "summarize.sh",
             arguments: [
@@ -631,6 +764,7 @@ final class JobStore: ObservableObject {
             ],
             jobID: jobID
         )
+        stopStageTimer()
 
         if cancelRequested { return }
         if pauseRequested {
@@ -726,7 +860,12 @@ final class JobStore: ObservableObject {
         let output: String
     }
 
-    private func runScript(name: String, arguments: [String], jobID: UUID?) async -> ScriptResult {
+    private func runScript(
+        name: String,
+        arguments: [String],
+        jobID: UUID?,
+        onOutputLine: (@MainActor (String) -> Void)? = nil
+    ) async -> ScriptResult {
         let scriptPath = scriptsDir + "/" + name
         guard FileManager.default.fileExists(atPath: scriptPath) else {
             appendLog("Не найден скрипт: \(scriptPath). Проверь путь в настройках.")
@@ -754,9 +893,9 @@ final class JobStore: ObservableObject {
             guard let text = String(data: data, encoding: .utf8) else { return }
             collector.append(text)
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { return }
             Task { @MainActor [weak self] in
-                self?.logText += trimmed + "\n"
+                if !trimmed.isEmpty { self?.logText += trimmed + "\n" }
+                onOutputLine?(text)
             }
         }
 

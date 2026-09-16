@@ -164,37 +164,41 @@ struct WhisperModelOption: Identifiable, Equatable {
     let approxSizeText: String
     let downloadURL: String
     let minRAMGigabytes: Int
+    // Очень грубая оценка: доля от длительности аудио, за которую модель
+    // успевает распознать речь на Apple Silicon. Нужна только для прикидки
+    // оставшегося времени в интерфейсе, не для точного расчёта.
+    let realtimeFactor: Double
 
     static let all: [WhisperModelOption] = [
         WhisperModelOption(
             id: "tiny", title: "tiny — самая быстрая, ниже точность",
             fileName: "ggml-tiny.bin", approxSizeText: "75 МБ",
             downloadURL: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin",
-            minRAMGigabytes: 0
+            minRAMGigabytes: 0, realtimeFactor: 0.08
         ),
         WhisperModelOption(
             id: "base", title: "base — быстро, базовая точность",
             fileName: "ggml-base.bin", approxSizeText: "140 МБ",
             downloadURL: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
-            minRAMGigabytes: 4
+            minRAMGigabytes: 4, realtimeFactor: 0.12
         ),
         WhisperModelOption(
             id: "small", title: "small — баланс скорости и качества",
             fileName: "ggml-small.bin", approxSizeText: "465 МБ",
             downloadURL: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin",
-            minRAMGigabytes: 8
+            minRAMGigabytes: 8, realtimeFactor: 0.25
         ),
         WhisperModelOption(
             id: "medium", title: "medium — хорошая точность",
             fileName: "ggml-medium.bin", approxSizeText: "1,5 ГБ",
             downloadURL: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin",
-            minRAMGigabytes: 8
+            minRAMGigabytes: 8, realtimeFactor: 0.45
         ),
         WhisperModelOption(
             id: "large-v3", title: "large-v3 — максимальная точность",
             fileName: "ggml-large-v3.bin", approxSizeText: "3,1 ГБ",
             downloadURL: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin",
-            minRAMGigabytes: 16
+            minRAMGigabytes: 16, realtimeFactor: 0.9
         )
     ]
 

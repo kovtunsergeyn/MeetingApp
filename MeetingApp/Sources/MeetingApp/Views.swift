@@ -257,16 +257,9 @@ struct JobRowView: View {
                 Button {
                     store.pauseCurrent()
                 } label: {
-                    Label("Пауза", systemImage: "pause.fill")
+                    Label("Отмена", systemImage: "pause.fill")
                 }
-                .help("Остановить и запомнить, на чём остановились")
-
-                Button(role: .destructive) {
-                    store.stopAndClear(jobID: job.id)
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                }
-                .help("Стоп и очистка: прервать и стереть прогресс этой задачи")
+                .help("Остановить текущий шаг и запомнить, на чём остановились — можно продолжить позже")
             } else if job.stage.isResumable {
                 Button {
                     store.resume(jobID: job.id)
@@ -277,13 +270,15 @@ struct JobRowView: View {
                 .help(job.hasTranscript
                       ? "Транскрипт уже готов — продолжим с шага саммари"
                       : "Начать обработку")
+            }
 
+            if job.stage != .done {
                 Button(role: .destructive) {
                     store.stopAndClear(jobID: job.id)
                 } label: {
                     Image(systemName: "trash")
                 }
-                .help("Очистить: убрать задачу и стереть промежуточные файлы")
+                .help("Удалить: убрать задачу и стереть её промежуточные файлы насовсем")
             }
 
             if job.hasTranscript, let path = job.transcriptPath {
@@ -322,7 +317,10 @@ struct QueueTabView: View {
         VStack(alignment: .leading, spacing: 14) {
             DropZoneView(store: store)
             YouTubeInputView(store: store)
-            MicrophoneRecorderView(store: store)
+            HStack(spacing: 10) {
+                MicrophoneRecorderView(store: store)
+                AttachTranscriptView(store: store)
+            }
 
             if activeJobs.isEmpty {
                 Text("Активных задач нет.")
@@ -339,9 +337,54 @@ struct QueueTabView: View {
                 .listStyle(.inset)
             }
 
+            if store.currentJobID != nil {
+                StageProgressView(store: store)
+            }
+
             LogPanelView(store: store)
         }
         .padding(16)
+    }
+}
+
+// MARK: - Прикрепить готовый транскрипт
+
+struct AttachTranscriptView: View {
+    @ObservedObject var store: JobStore
+
+    var body: some View {
+        Button {
+            let panel = NSOpenPanel()
+            panel.allowsMultipleSelection = false
+            panel.canChooseDirectories = false
+            panel.canChooseFiles = true
+            panel.allowedContentTypes = [.plainText]
+            if panel.runModal() == .OK, let url = panel.url {
+                store.addTranscriptFile(url)
+            }
+        } label: {
+            Label("Прикрепить транскрипт (.txt)", systemImage: "doc.badge.plus")
+        }
+        .help("Есть готовый текст встречи — пропустить распознавание речи и сразу сделать саммари")
+    }
+}
+
+// MARK: - Индикатор прогресса текущего шага
+
+struct StageProgressView: View {
+    @ObservedObject var store: JobStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if let fraction = store.stageProgressFraction {
+                ProgressView(value: fraction)
+            } else {
+                ProgressView()
+            }
+            Text(store.stageStatusText)
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
     }
 }
 
@@ -418,23 +461,34 @@ struct LogPanelView: View {
         let content = store.logText.isEmpty ? "Пока пусто — жду файлы…" : store.logText
 
         return VStack(alignment: .leading, spacing: 4) {
-            Text("Лог")
-                .font(.subheadline)
-                .foregroundColor(.secondary)
-            ScrollViewReader { proxy in
-                ScrollView {
-                    Text(content)
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundColor(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .textSelection(.enabled)
-                        .padding(8)
-                        .id("logBottom")
+            Button {
+                store.isLogExpanded.toggle()
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: store.isLogExpanded ? "chevron.down" : "chevron.right")
+                    Text("Лог")
                 }
-                .background(Color(nsColor: .textBackgroundColor))
-                .cornerRadius(8)
-                .onChange(of: store.logText) { _ in
-                    proxy.scrollTo("logBottom", anchor: .bottom)
+            }
+            .buttonStyle(.plain)
+            .font(.subheadline)
+            .foregroundColor(.secondary)
+
+            if store.isLogExpanded {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        Text(content)
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundColor(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                            .padding(8)
+                            .id("logBottom")
+                    }
+                    .background(Color(nsColor: .textBackgroundColor))
+                    .cornerRadius(8)
+                    .onChange(of: store.logText) { _ in
+                        proxy.scrollTo("logBottom", anchor: .bottom)
+                    }
                 }
             }
         }
