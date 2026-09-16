@@ -1,0 +1,13 @@
+# Артефакты сборки
+MeetingApp/.build/
+MeetingApp/MeetingApp.app/
+*.zip
+
+# Личные данные пользователя — никогда не коммитим
+/Встречи/
+/swifttest/
+*.mkv
+*.mp4
+*.mov
+
+.DS_Store
