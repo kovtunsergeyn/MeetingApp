@@ -53,14 +53,23 @@ cat > "$APP_BUNDLE/Contents/Info.plist" << 'EOF'
 </plist>
 EOF
 
-echo "3/4 Подписываю .app стабильным идентификатором…"
-# swift build оставляет «сырую» ad-hoc-подпись без привязки к Info.plist и с
-# именем бинарника вместо CFBundleIdentifier. Из-за этого каждая пересборка
-# выглядела для TCC как новое приложение, и разрешения (микрофон, управление
-# Заметками) не сохранялись между запусками build_app.sh. Подписываем сам
-# .app целиком с фиксированным идентификатором — тогда macOS считает его
-# одним и тем же приложением и держит выданные разрешения.
-codesign --force --deep --sign - --identifier "ru.sk.meetingapp" "$APP_BUNDLE"
+echo "3/4 Подписываю .app…"
+# Почему не ad-hoc (--sign -): у ad-hoc подписи «designated requirement» — это
+# буквально хэш бинарника (cdhash H"..."). Любая пересборка меняет хэш, и для
+# TCC это уже другое приложение: выданные разрешения (запись экрана, календарь,
+# доступ к папкам) перестают действовать, хотя в Системных настройках строка
+# приложения остаётся и выглядит включённой. Поэтому подписываем локальным
+# самоподписанным сертификатом — тогда требование становится
+# «identifier + certificate leaf», от хэша не зависит, и разрешения переживают
+# пересборки. Сертификат создаётся один раз и лежит в login-связке ключей.
+SIGN_IDENTITY="MeetingApp Local Signing"
+if security find-certificate -c "$SIGN_IDENTITY" >/dev/null 2>&1; then
+  codesign --force --deep --sign "$SIGN_IDENTITY" --identifier "ru.sk.meetingapp" "$APP_BUNDLE"
+else
+  echo "  ВНИМАНИЕ: сертификат «$SIGN_IDENTITY» не найден в связке ключей."
+  echo "  Подписываю ad-hoc — разрешения macOS будут слетать при каждой пересборке."
+  codesign --force --deep --sign - --identifier "ru.sk.meetingapp" "$APP_BUNDLE"
+fi
 
 echo "4/4 Копирую скрипты в $SCRIPTS_TARGET…"
 mkdir -p "$SCRIPTS_TARGET"
