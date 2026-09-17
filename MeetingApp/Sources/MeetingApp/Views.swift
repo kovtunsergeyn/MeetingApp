@@ -17,7 +17,7 @@ struct DropZoneView: View {
                     Image(systemName: "waveform.badge.plus")
                         .font(.system(size: 30))
                         .foregroundColor(.secondary)
-                    Text("Перетащи сюда видео или аудио встречи")
+                    Text("Перетащи сюда видео, аудио или готовый транскрипт (.txt)")
                         .font(.headline)
                     Text("или нажми, чтобы выбрать файлы")
                         .font(.caption)
@@ -53,7 +53,11 @@ struct DropZoneView: View {
                 }
                 if let finalURL = resolved {
                     Task { @MainActor in
-                        store.addFiles([finalURL])
+                        if finalURL.pathExtension.lowercased() == "txt" {
+                            store.addTranscriptFile(finalURL)
+                        } else {
+                            store.addFiles([finalURL])
+                        }
                     }
                 }
             }
@@ -365,7 +369,7 @@ struct AttachTranscriptView: View {
         } label: {
             Label("Прикрепить транскрипт (.txt)", systemImage: "doc.badge.plus")
         }
-        .help("Есть готовый текст встречи — пропустить распознавание речи и сразу сделать саммари")
+        .help("Есть готовый текст встречи — пропустить распознавание речи и сразу сделать саммари. Совет: перетаскивание файла в зону выше не открывает системный диалог выбора и не спрашивает доступ к папкам.")
     }
 }
 
