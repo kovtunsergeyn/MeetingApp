@@ -7,36 +7,64 @@ import EventKit
 // нужна: если аккаунт добавлен в систему, EventKit уже видит его календари.
 final class CalendarMeetingDetector {
     var onMeetingDetected: ((String, String) -> Void)?
+    // Для диагностики в логе приложения — сообщает текущий статус доступа.
+    var onAccessStatus: ((String) -> Void)?
 
     private let store = EKEventStore()
     private var timer: Timer?
     private let pollInterval: TimeInterval = 30
+    private let retryInterval: TimeInterval = 60
     private var handledEventIDs: Set<String> = []
+    private var isActive = false
 
     func start() {
-        guard timer == nil else { return }
-        requestAccessIfNeeded { [weak self] granted in
-            guard granted, let self else { return }
-            self.poll()
-            self.timer = Timer.scheduledTimer(withTimeInterval: self.pollInterval, repeats: true) { [weak self] _ in
-                self?.poll()
-            }
-        }
+        guard !isActive else { return }
+        isActive = true
+        attemptStart()
     }
 
     func stop() {
+        isActive = false
         timer?.invalidate()
         timer = nil
     }
 
-    private func requestAccessIfNeeded(completion: @escaping (Bool) -> Void) {
+    private func attemptStart() {
+        requestAccessIfNeeded { [weak self] granted, statusText in
+            guard let self, self.isActive else { return }
+            self.onAccessStatus?(statusText)
+            if granted {
+                self.poll()
+                self.timer?.invalidate()
+                self.timer = Timer.scheduledTimer(withTimeInterval: self.pollInterval, repeats: true) { [weak self] _ in
+                    self?.poll()
+                }
+            } else {
+                // Доступ ещё не дали (или пользователь пока не ответил на диалог) —
+                // не сдаёмся насовсем, пробуем снова через минуту.
+                self.timer?.invalidate()
+                self.timer = Timer.scheduledTimer(withTimeInterval: self.retryInterval, repeats: false) { [weak self] _ in
+                    self?.attemptStart()
+                }
+            }
+        }
+    }
+
+    private func requestAccessIfNeeded(completion: @escaping (Bool, String) -> Void) {
         if #available(macOS 14.0, *) {
-            store.requestFullAccessToEvents { granted, _ in
-                DispatchQueue.main.async { completion(granted) }
+            let current = EKEventStore.authorizationStatus(for: .event)
+            if current == .fullAccess {
+                completion(true, "доступ уже разрешён")
+                return
+            }
+            store.requestFullAccessToEvents { granted, error in
+                let text = granted ? "доступ разрешён" : "доступ не получен (\(error?.localizedDescription ?? "нет ответа"))"
+                DispatchQueue.main.async { completion(granted, text) }
             }
         } else {
-            store.requestAccess(to: .event) { granted, _ in
-                DispatchQueue.main.async { completion(granted) }
+            store.requestAccess(to: .event) { granted, error in
+                let text = granted ? "доступ разрешён" : "доступ не получен (\(error?.localizedDescription ?? "нет ответа"))"
+                DispatchQueue.main.async { completion(granted, text) }
             }
         }
     }

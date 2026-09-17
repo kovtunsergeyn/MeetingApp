@@ -85,6 +85,9 @@ final class JobStore: ObservableObject {
         calendarDetector.onMeetingDetected = { [weak self] url, platform in
             self?.handleMeetingDetected(url: url, platform: platform)
         }
+        calendarDetector.onAccessStatus = { [weak self] status in
+            self?.appendLog("Календарь (детектор встреч): \(status)")
+        }
         guard meetingDetectionEnabled else { return }
         meetingDetector.start()
         calendarDetector.start()
@@ -96,18 +99,25 @@ final class JobStore: ObservableObject {
         guard !ignoredMeetingURLs.contains(url) else { return }
         detectedMeetingURL = url
         detectedMeetingPlatform = platform
+        MeetingAlertPanelController.shared.show(
+            platform: platform,
+            onStart: { [weak self] in self?.startMeetingRecording() },
+            onDismiss: { [weak self] in self?.dismissDetectedMeeting() }
+        )
     }
 
     func dismissDetectedMeeting() {
         if let url = detectedMeetingURL { ignoredMeetingURLs.insert(url) }
         detectedMeetingURL = nil
         detectedMeetingPlatform = nil
+        MeetingAlertPanelController.shared.hide()
     }
 
     func startMeetingRecording() {
         detectedMeetingURL = nil
         detectedMeetingPlatform = nil
         meetingRecordingPermissionIssue = false
+        MeetingAlertPanelController.shared.hide()
 
         audioRecorder.start()
 

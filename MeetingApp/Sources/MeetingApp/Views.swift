@@ -528,36 +528,6 @@ struct MeetingRecordingsTabView: View {
     }
 }
 
-// MARK: - Обнаружена встреча
-
-struct MeetingDetectedSheet: View {
-    @ObservedObject var store: JobStore
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Label("Похоже, у тебя встреча", systemImage: "video.fill")
-                .font(.title3).bold()
-
-            if let platform = store.detectedMeetingPlatform {
-                Text("Похоже, сейчас идёт встреча (\(platform)) — по открытой вкладке браузера или по календарю. Начать запись и потом сделать транскрипт с саммари?")
-                    .font(.callout)
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            HStack {
-                Button("Не сейчас") { store.dismissDetectedMeeting() }
-                Spacer()
-                Button("Начать запись") { store.startMeetingRecording() }
-                    .keyboardShortcut(.defaultAction)
-                    .buttonStyle(.borderedProminent)
-            }
-        }
-        .padding(24)
-        .frame(width: 420)
-    }
-}
-
 // MARK: - Панель лога
 
 struct LogPanelView: View {
@@ -900,11 +870,6 @@ struct ContentView: View {
             get: { store.showClaudeLoginSheet },
             set: { newValue in store.showClaudeLoginSheet = newValue }
         )
-        let meetingDetectedBinding = Binding<Bool>(
-            get: { store.detectedMeetingURL != nil },
-            set: { newValue in if !newValue { store.dismissDetectedMeeting() } }
-        )
-
         return VStack(spacing: 0) {
             headerRow
 
@@ -935,9 +900,6 @@ struct ContentView: View {
         }
         .sheet(isPresented: claudeLoginBinding) {
             ClaudeLoginSheet(store: store)
-        }
-        .sheet(isPresented: meetingDetectedBinding) {
-            MeetingDetectedSheet(store: store)
         }
     }
 }
