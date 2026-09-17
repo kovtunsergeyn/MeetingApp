@@ -68,6 +68,40 @@ final class JobStore: ObservableObject {
             }
         }
     }
+    // Свои домены ВКС (внутрикорпоративные системы), которых нет и не может
+    // быть в списке из коробки (Zoom/Meet/Teams).
+    @Published var customMeetingDomains: [CustomMeetingDomain] = JobStore.loadCustomMeetingDomains() {
+        didSet {
+            JobStore.saveCustomMeetingDomains(customMeetingDomains)
+            MeetingLinkDetector.customPatterns = customMeetingDomains.map { ($0.domain, $0.label) }
+        }
+    }
+
+    @Published var newMeetingDomainText: String = ""
+    @Published var newMeetingLabelText: String = ""
+
+    func addCustomMeetingDomain(domain: String, label: String) {
+        let cleanDomain = domain.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let cleanLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanDomain.isEmpty else { return }
+        customMeetingDomains.append(CustomMeetingDomain(domain: cleanDomain, label: cleanLabel.isEmpty ? cleanDomain : cleanLabel))
+    }
+
+    func removeCustomMeetingDomain(_ id: UUID) {
+        customMeetingDomains.removeAll { $0.id == id }
+    }
+
+    private static func loadCustomMeetingDomains() -> [CustomMeetingDomain] {
+        guard let data = UserDefaults.standard.data(forKey: "customMeetingDomains"),
+              let decoded = try? JSONDecoder().decode([CustomMeetingDomain].self, from: data) else { return [] }
+        return decoded
+    }
+
+    private static func saveCustomMeetingDomains(_ domains: [CustomMeetingDomain]) {
+        guard let data = try? JSONEncoder().encode(domains) else { return }
+        UserDefaults.standard.set(data, forKey: "customMeetingDomains")
+    }
+
     @Published var detectedMeetingURL: String? = nil
     @Published var detectedMeetingPlatform: String? = nil
     @Published var isMeetingRecordingActive: Bool = false
@@ -348,6 +382,7 @@ final class JobStore: ObservableObject {
         createDirectories()
         loadHistory()
         normalizeStagesOnLaunch()
+        MeetingLinkDetector.customPatterns = customMeetingDomains.map { ($0.domain, $0.label) }
         startMeetingDetection()
     }
 

@@ -886,6 +886,52 @@ struct SettingsSheet: View {
 
             Divider()
 
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Свои платформы ВКС (внутрикорпоративные и т.п.)")
+                    .font(.subheadline)
+                Text("Zoom, Google Meet и MS Teams узнаются сами. Для остального — добавь фрагмент ссылки.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                ForEach(store.customMeetingDomains) { entry in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(entry.label).font(.callout)
+                            Text(entry.domain).font(.caption2).foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        Button(role: .destructive) {
+                            store.removeCustomMeetingDomain(entry.id)
+                        } label: {
+                            Image(systemName: "trash")
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                }
+
+                HStack {
+                    TextField("Фрагмент ссылки, например vcs.example.com", text: Binding(
+                        get: { store.newMeetingDomainText },
+                        set: { store.newMeetingDomainText = $0 }
+                    ))
+                    .textFieldStyle(.roundedBorder)
+                    TextField("Название", text: Binding(
+                        get: { store.newMeetingLabelText },
+                        set: { store.newMeetingLabelText = $0 }
+                    ))
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 140)
+                    Button("Добавить") {
+                        store.addCustomMeetingDomain(domain: store.newMeetingDomainText, label: store.newMeetingLabelText)
+                        store.newMeetingDomainText = ""
+                        store.newMeetingLabelText = ""
+                    }
+                    .disabled(store.newMeetingDomainText.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+
+            Divider()
+
             Button {
                 store.checkDependenciesAndPrompt()
             } label: {

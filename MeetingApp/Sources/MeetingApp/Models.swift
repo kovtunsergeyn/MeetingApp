@@ -315,7 +315,7 @@ enum YouTubeLink {
 // MARK: - Распознавание ссылок на видеоконференции (ВКС)
 
 enum MeetingLinkDetector {
-    private static let patterns: [(needle: String, platform: String)] = [
+    private static let builtInPatterns: [(needle: String, platform: String)] = [
         ("meet.google.com/", "Google Meet"),
         ("teams.microsoft.com/", "Microsoft Teams"),
         ("teams.live.com/meet", "Microsoft Teams"),
@@ -323,10 +323,14 @@ enum MeetingLinkDetector {
         ("zoom.us/wc/", "Zoom")
     ]
 
+    // Свои домены ВКС (внутрикорпоративные системы и т.п.), которые пользователь
+    // добавляет вручную в Настройках — их не может быть в списке из коробки.
+    static var customPatterns: [(needle: String, platform: String)] = []
+
     // Возвращает название платформы, если ссылка похожа на активную встречу.
     static func matchedPlatformName(in url: String) -> String? {
         let lower = url.lowercased()
-        for pattern in patterns where lower.contains(pattern.needle) {
+        for pattern in builtInPatterns + customPatterns where lower.contains(pattern.needle.lowercased()) {
             return pattern.platform
         }
         return nil
@@ -344,6 +348,14 @@ enum MeetingLinkDetector {
         }
         return nil
     }
+}
+
+// MARK: - Свой домен ВКС, добавленный пользователем вручную
+
+struct CustomMeetingDomain: Codable, Identifiable, Equatable {
+    var id = UUID()
+    var domain: String    // фрагмент URL, например "vcs.example.com"
+    var label: String     // как называть в уведомлении, например "Корпоративная ВКС"
 }
 
 // MARK: - Браузеры, в которых ищем открытую встречу
