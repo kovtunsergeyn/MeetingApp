@@ -452,6 +452,112 @@ struct HistoryTabView: View {
     }
 }
 
+// MARK: - Вкладка «Записи встреч»
+
+struct MeetingRecordingsTabView: View {
+    @ObservedObject var store: JobStore
+
+    private var elapsedText: String {
+        let minutes = store.meetingRecordingElapsedSeconds / 60
+        let seconds = store.meetingRecordingElapsedSeconds % 60
+        return String(format: "%02d:%02d", minutes, seconds)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if store.isMeetingRecordingActive {
+                HStack(spacing: 10) {
+                    Circle().fill(Color.red).frame(width: 8, height: 8)
+                    Text("Идёт запись встречи… \(elapsedText)")
+                        .font(.headline)
+                    Spacer()
+                    Button("Остановить запись") {
+                        store.stopMeetingRecording()
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                .padding(12)
+                .background(Color.red.opacity(0.08))
+                .cornerRadius(10)
+            } else {
+                HStack {
+                    Text("Автоопределение ВКС в браузере")
+                    Spacer()
+                    Toggle("", isOn: Binding(
+                        get: { store.meetingDetectionEnabled },
+                        set: { store.meetingDetectionEnabled = $0 }
+                    ))
+                    .labelsHidden()
+                    Button("Начать запись сейчас") {
+                        store.startMeetingRecording()
+                    }
+                }
+                .font(.callout)
+                .foregroundColor(.secondary)
+            }
+
+            Divider()
+
+            if store.meetingRecordingJobs.isEmpty {
+                Spacer()
+                Text("Записей встреч пока нет.")
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity)
+                Spacer()
+            } else {
+                List(store.meetingRecordingJobs) { job in
+                    JobRowView(store: store, job: job)
+                        .contextMenu {
+                            Button("Удалить из истории") {
+                                store.removeJob(jobID: job.id)
+                            }
+                        }
+                }
+                .listStyle(.inset)
+            }
+        }
+        .padding(16)
+        .alert("Нет доступа к записи экрана", isPresented: Binding(
+            get: { store.meetingRecordingPermissionIssue },
+            set: { store.meetingRecordingPermissionIssue = $0 }
+        )) {
+            Button("Ок", role: .cancel) {}
+        } message: {
+            Text("Разреши доступ в Настройках системы → Конфиденциальность и безопасность → Запись экрана → MeetingApp, затем попробуй снова.")
+        }
+    }
+}
+
+// MARK: - Обнаружена встреча
+
+struct MeetingDetectedSheet: View {
+    @ObservedObject var store: JobStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Label("Похоже, у тебя встреча", systemImage: "video.fill")
+                .font(.title3).bold()
+
+            if let platform = store.detectedMeetingPlatform {
+                Text("Обнаружена активная вкладка: \(platform). Начать запись и потом сделать транскрипт с саммари?")
+                    .font(.callout)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack {
+                Button("Не сейчас") { store.dismissDetectedMeeting() }
+                Spacer()
+                Button("Начать запись") { store.startMeetingRecording() }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(24)
+        .frame(width: 420)
+    }
+}
+
 // MARK: - Панель лога
 
 struct LogPanelView: View {
@@ -794,6 +900,10 @@ struct ContentView: View {
             get: { store.showClaudeLoginSheet },
             set: { newValue in store.showClaudeLoginSheet = newValue }
         )
+        let meetingDetectedBinding = Binding<Bool>(
+            get: { store.detectedMeetingURL != nil },
+            set: { newValue in if !newValue { store.dismissDetectedMeeting() } }
+        )
 
         return VStack(spacing: 0) {
             headerRow
@@ -806,6 +916,10 @@ struct ContentView: View {
                 HistoryTabView(store: store)
                     .tabItem { Label("История", systemImage: "clock.arrow.circlepath") }
                     .tag(1)
+
+                MeetingRecordingsTabView(store: store)
+                    .tabItem { Label("Записи встреч", systemImage: "video.fill") }
+                    .tag(2)
             }
             .padding(.top, 8)
         }
@@ -821,6 +935,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: claudeLoginBinding) {
             ClaudeLoginSheet(store: store)
+        }
+        .sheet(isPresented: meetingDetectedBinding) {
+            MeetingDetectedSheet(store: store)
         }
     }
 }

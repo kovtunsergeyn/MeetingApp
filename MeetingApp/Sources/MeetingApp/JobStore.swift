@@ -47,6 +47,134 @@ final class JobStore: ObservableObject {
     private var saveDestinationContinuation: CheckedContinuation<SaveDestinations, Never>?
 
     let audioRecorder = AudioRecorder()
+    let systemAudioRecorder = SystemAudioRecorder()
+    private let meetingDetector = BrowserMeetingDetector()
+
+    // MARK: - Автоопределение и запись встреч (ВКС)
+
+    @Published var meetingDetectionEnabled: Bool = UserDefaults.standard.object(forKey: "meetingDetectionEnabled") == nil
+        ? true
+        : UserDefaults.standard.bool(forKey: "meetingDetectionEnabled") {
+        didSet {
+            UserDefaults.standard.set(meetingDetectionEnabled, forKey: "meetingDetectionEnabled")
+            if meetingDetectionEnabled { meetingDetector.start() } else { meetingDetector.stop() }
+        }
+    }
+    @Published var detectedMeetingURL: String? = nil
+    @Published var detectedMeetingPlatform: String? = nil
+    @Published var isMeetingRecordingActive: Bool = false
+    @Published var meetingRecordingElapsedSeconds: Int = 0
+    @Published var meetingRecordingPermissionIssue: Bool = false
+
+    private var ignoredMeetingURLs: Set<String> = []
+    private var meetingRecordingStartDate: Date?
+    private var pendingSystemAudioURL: URL?
+    private var meetingElapsedTimer: Timer?
+
+    func startMeetingDetection() {
+        meetingDetector.onMeetingDetected = { [weak self] url, platform in
+            self?.handleMeetingDetected(url: url, platform: platform)
+        }
+        guard meetingDetectionEnabled else { return }
+        meetingDetector.start()
+    }
+
+    private func handleMeetingDetected(url: String, platform: String) {
+        guard !isMeetingRecordingActive else { return }
+        guard detectedMeetingURL == nil else { return }
+        guard !ignoredMeetingURLs.contains(url) else { return }
+        detectedMeetingURL = url
+        detectedMeetingPlatform = platform
+    }
+
+    func dismissDetectedMeeting() {
+        if let url = detectedMeetingURL { ignoredMeetingURLs.insert(url) }
+        detectedMeetingURL = nil
+        detectedMeetingPlatform = nil
+    }
+
+    func startMeetingRecording() {
+        detectedMeetingURL = nil
+        detectedMeetingPlatform = nil
+        meetingRecordingPermissionIssue = false
+
+        audioRecorder.start()
+
+        Task {
+            guard let systemURL = await systemAudioRecorder.start() else {
+                appendLog("Не удалось начать запись системного звука — проверь разрешение «Запись экрана» для MeetingApp в Системных настройках.")
+                meetingRecordingPermissionIssue = true
+                audioRecorder.cancel()
+                return
+            }
+            pendingSystemAudioURL = systemURL
+            meetingRecordingStartDate = Date()
+            isMeetingRecordingActive = true
+            startMeetingElapsedTimer()
+            appendLog("Начата запись встречи.")
+        }
+    }
+
+    func stopMeetingRecording() {
+        guard isMeetingRecordingActive else { return }
+        isMeetingRecordingActive = false
+        stopMeetingElapsedTimer()
+
+        Task {
+            let micURL = audioRecorder.stop()
+            let systemURL = await systemAudioRecorder.stop() ?? pendingSystemAudioURL
+            pendingSystemAudioURL = nil
+            guard let systemURL else {
+                appendLog("Запись встречи не удалась — нет файла системного звука.")
+                return
+            }
+            await finalizeMeetingRecording(systemURL: systemURL, micURL: micURL)
+        }
+    }
+
+    private func finalizeMeetingRecording(systemURL: URL, micURL: URL?) async {
+        appendLog("Свожу дорожки записи встречи…")
+        let startDate = meetingRecordingStartDate ?? Date()
+        let safeName = "Встреча " + DateFormatter.rowDate.string(from: startDate).replacingOccurrences(of: ":", with: "-")
+        let destDir = baseDir + "/tmp/" + safeName
+        try? FileManager.default.createDirectory(atPath: destDir, withIntermediateDirectories: true)
+        let mixedPath = destDir + "/meeting.m4a"
+
+        let result = await runScript(
+            name: "mix_meeting_audio.sh",
+            arguments: [systemURL.path, micURL?.path ?? "/dev/null", mixedPath],
+            jobID: nil
+        )
+
+        try? FileManager.default.removeItem(at: systemURL)
+        if let micURL { try? FileManager.default.removeItem(at: micURL) }
+
+        guard result.exitCode == 0, FileManager.default.fileExists(atPath: mixedPath) else {
+            appendLog("Не удалось свести аудио встречи (код \(result.exitCode)).")
+            return
+        }
+
+        var job = Job(sourcePath: mixedPath)
+        job.name = safeName
+        job.isMeetingRecording = true
+        jobs.append(job)
+        appendLog("Запись встречи добавлена в очередь: \(safeName)")
+        saveHistory()
+        startNextIfIdle()
+    }
+
+    private func startMeetingElapsedTimer() {
+        meetingRecordingElapsedSeconds = 0
+        meetingElapsedTimer?.invalidate()
+        meetingElapsedTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.meetingRecordingElapsedSeconds += 1 }
+        }
+    }
+
+    private func stopMeetingElapsedTimer() {
+        meetingElapsedTimer?.invalidate()
+        meetingElapsedTimer = nil
+    }
 
     // MARK: - Настройки
 
@@ -103,6 +231,7 @@ final class JobStore: ObservableObject {
         createDirectories()
         loadHistory()
         normalizeStagesOnLaunch()
+        startMeetingDetection()
     }
 
     private func createDirectories() {
@@ -951,6 +1080,10 @@ final class JobStore: ObservableObject {
         }
 
         return result.sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    var meetingRecordingJobs: [Job] {
+        return jobs.filter { $0.isMeetingRecording }.sorted { $0.createdAt > $1.createdAt }
     }
 }
 

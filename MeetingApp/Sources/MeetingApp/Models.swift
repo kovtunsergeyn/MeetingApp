@@ -68,6 +68,9 @@ struct Job: Identifiable, Codable, Equatable {
     // Полный вывод упавшего шага (ffmpeg/whisper-cli/yt-dlp/claude) — для разворачиваемых подробностей ошибки.
     var lastErrorDetail: String? = nil
 
+    // Задача пришла из автозаписи встречи (ВКС) — показываем во вкладке «Записи встреч».
+    var isMeetingRecording: Bool = false
+
     init(sourcePath: String) {
         let url = URL(fileURLWithPath: sourcePath)
         self.id = UUID()
@@ -307,4 +310,42 @@ enum YouTubeLink {
         guard let url = URL(string: trimmed), let host = url.host else { return false }
         return host.contains("youtube.com") || host.contains("youtu.be")
     }
+}
+
+// MARK: - Распознавание ссылок на видеоконференции (ВКС)
+
+enum MeetingLinkDetector {
+    private static let patterns: [(needle: String, platform: String)] = [
+        ("meet.google.com/", "Google Meet"),
+        ("teams.microsoft.com/", "Microsoft Teams"),
+        ("teams.live.com/meet", "Microsoft Teams"),
+        ("zoom.us/j/", "Zoom"),
+        ("zoom.us/wc/", "Zoom")
+    ]
+
+    // Возвращает название платформы, если ссылка похожа на активную встречу.
+    static func matchedPlatformName(in url: String) -> String? {
+        let lower = url.lowercased()
+        for pattern in patterns where lower.contains(pattern.needle) {
+            return pattern.platform
+        }
+        return nil
+    }
+}
+
+// MARK: - Браузеры, в которых ищем открытую встречу
+
+struct MonitoredBrowser {
+    enum Dialect { case safari, chromium }
+
+    let processName: String
+    let appleScriptName: String
+    let dialect: Dialect
+
+    static let all: [MonitoredBrowser] = [
+        MonitoredBrowser(processName: "Safari", appleScriptName: "Safari", dialect: .safari),
+        MonitoredBrowser(processName: "Google Chrome", appleScriptName: "Google Chrome", dialect: .chromium),
+        MonitoredBrowser(processName: "Brave Browser", appleScriptName: "Brave Browser", dialect: .chromium),
+        MonitoredBrowser(processName: "Yandex", appleScriptName: "Yandex", dialect: .chromium)
+    ]
 }
