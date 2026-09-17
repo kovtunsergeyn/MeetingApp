@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import CoreAudio
 
 @MainActor
 final class JobStore: ObservableObject {
@@ -77,6 +78,28 @@ final class JobStore: ObservableObject {
     private var meetingRecordingStartDate: Date?
     private var pendingSystemAudioURL: URL?
     private var meetingElapsedTimer: Timer?
+    private var originalDefaultInputDeviceID: AudioDeviceID?
+
+    // MARK: - Выбор микрофона для записи встречи
+
+    @Published var availableMicrophones: [AudioDevices.Device] = []
+    @Published var selectedMicrophoneDeviceID: AudioDeviceID? = {
+        let stored = UserDefaults.standard.integer(forKey: "selectedMicrophoneDeviceID")
+        return stored == 0 ? nil : AudioDeviceID(stored)
+    }() {
+        didSet {
+            UserDefaults.standard.set(Int(selectedMicrophoneDeviceID ?? 0), forKey: "selectedMicrophoneDeviceID")
+        }
+    }
+
+    func refreshMicrophoneList() {
+        availableMicrophones = AudioDevices.listInputDevices()
+        // Если ранее выбранного устройства больше нет (отключили гарнитуру
+        // и т.п.) — возвращаемся к системному микрофону по умолчанию.
+        if let selected = selectedMicrophoneDeviceID, !availableMicrophones.contains(where: { $0.id == selected }) {
+            selectedMicrophoneDeviceID = nil
+        }
+    }
 
     func startMeetingDetection() {
         meetingDetector.onMeetingDetected = { [weak self] url, platform in
@@ -87,6 +110,9 @@ final class JobStore: ObservableObject {
         }
         calendarDetector.onAccessStatus = { [weak self] status in
             self?.appendLog("Календарь (детектор встреч): \(status)")
+        }
+        meetingDetector.onDiagnostic = { [weak self] message in
+            self?.appendLog("Браузер (детектор встреч): \(message)")
         }
         guard meetingDetectionEnabled else { return }
         meetingDetector.start()
@@ -99,7 +125,9 @@ final class JobStore: ObservableObject {
         guard !ignoredMeetingURLs.contains(url) else { return }
         detectedMeetingURL = url
         detectedMeetingPlatform = platform
+        refreshMicrophoneList()
         MeetingAlertPanelController.shared.show(
+            store: self,
             platform: platform,
             onStart: { [weak self] in self?.startMeetingRecording() },
             onDismiss: { [weak self] in self?.dismissDetectedMeeting() }
@@ -118,6 +146,16 @@ final class JobStore: ObservableObject {
         detectedMeetingPlatform = nil
         meetingRecordingPermissionIssue = false
         MeetingAlertPanelController.shared.hide()
+
+        // Если выбран не системный микрофон по умолчанию — переключаем на
+        // время записи и запоминаем, что было, чтобы вернуть после.
+        if let chosen = selectedMicrophoneDeviceID, chosen != AudioDevices.defaultInputDeviceID() {
+            originalDefaultInputDeviceID = AudioDevices.defaultInputDeviceID()
+            if !AudioDevices.setDefaultInputDevice(chosen) {
+                appendLog("Не удалось переключиться на выбранный микрофон — записываю с текущего по умолчанию.")
+                originalDefaultInputDeviceID = nil
+            }
+        }
 
         audioRecorder.start()
 
@@ -143,6 +181,11 @@ final class JobStore: ObservableObject {
         guard isMeetingRecordingActive else { return }
         isMeetingRecordingActive = false
         stopMeetingElapsedTimer()
+
+        if let original = originalDefaultInputDeviceID {
+            AudioDevices.setDefaultInputDevice(original)
+            originalDefaultInputDeviceID = nil
+        }
 
         Task {
             let micURL = audioRecorder.stop()

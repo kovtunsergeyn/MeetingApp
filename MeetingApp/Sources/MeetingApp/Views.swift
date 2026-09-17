@@ -488,12 +488,17 @@ struct MeetingRecordingsTabView: View {
                         set: { store.meetingDetectionEnabled = $0 }
                     ))
                     .labelsHidden()
+                }
+                .font(.callout)
+                .foregroundColor(.secondary)
+
+                HStack {
+                    MicrophonePickerView(store: store)
+                    Spacer()
                     Button("Начать запись сейчас") {
                         store.startMeetingRecording()
                     }
                 }
-                .font(.callout)
-                .foregroundColor(.secondary)
             }
 
             Divider()
