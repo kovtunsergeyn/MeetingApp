@@ -53,9 +53,10 @@ CONF
     -name "$SIGN_IDENTITY" -passout pass:meetingapp \
     -macalg sha1 -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES >/dev/null 2>&1
 
-  # -A разрешает codesign пользоваться ключом без запроса пароля каждый раз.
+  # Ключом разрешаем пользоваться только codesign (-T), без -A: иначе доступ
+  # к приватному ключу без запроса получило бы любое приложение на машине.
   security import "$workdir/bundle.p12" -k "$HOME/Library/Keychains/login.keychain-db" \
-    -P meetingapp -T /usr/bin/codesign -A >/dev/null 2>&1
+    -P meetingapp -T /usr/bin/codesign >/dev/null 2>&1
 
   if security find-certificate -c "$SIGN_IDENTITY" >/dev/null 2>&1; then
     echo "   Сертификат создан."
