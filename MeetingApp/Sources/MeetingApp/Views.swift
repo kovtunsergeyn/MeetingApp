@@ -517,13 +517,22 @@ struct MeetingRecordingsTabView: View {
             }
         }
         .padding(16)
-        .alert("Нет доступа к записи экрана", isPresented: Binding(
+        .alert("Не удалось начать запись", isPresented: Binding(
             get: { store.meetingRecordingPermissionIssue },
             set: { store.meetingRecordingPermissionIssue = $0 }
         )) {
             Button("Ок", role: .cancel) {}
         } message: {
-            Text("Разреши доступ в Настройках системы → Конфиденциальность и безопасность → Запись экрана → MeetingApp, затем попробуй снова.")
+            Text((store.systemAudioRecorder.lastErrorMessage ?? "Причина неизвестна.")
+                 + "\n\nЕсли дело в разрешении — Системные настройки → Конфиденциальность и безопасность → Запись экрана → MeetingApp, затем попробуй снова.")
+        }
+        .alert("Нет доступа к микрофону", isPresented: Binding(
+            get: { store.audioRecorder.permissionDenied },
+            set: { store.audioRecorder.permissionDenied = $0 }
+        )) {
+            Button("Ок", role: .cancel) {}
+        } message: {
+            Text("Разреши доступ к микрофону в Настройках системы → Конфиденциальность и безопасность → Микрофон → MeetingApp.")
         }
     }
 }
@@ -715,6 +724,71 @@ struct SaveDestinationSheet: View {
 
 // MARK: - Настройки
 
+// MARK: - Строка модели whisper в настройках
+
+struct WhisperModelRow: View {
+    @ObservedObject var store: JobStore
+    let option: WhisperModelOption
+    let isSelected: Bool
+
+    private var isDownloaded: Bool { store.isModelDownloaded(option) }
+    private var isDownloading: Bool { store.modelDownloadInProgress == option.id }
+    private var isRecommended: Bool { option.id == WhisperModelOption.recommended().id }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                .foregroundColor(isSelected ? .accentColor : .secondary)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(option.title)
+                        .font(.callout)
+                    if isRecommended {
+                        Text("рекомендовано")
+                            .font(.caption2)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 1)
+                            .background(Color.accentColor.opacity(0.15))
+                            .cornerRadius(4)
+                    }
+                }
+                Text(store.modelFileSizeText(option) ?? option.approxSizeText)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+
+            Spacer()
+
+            if isDownloading {
+                ProgressView().controlSize(.small)
+            } else if isDownloaded {
+                if !isSelected {
+                    Button(role: .destructive) {
+                        store.deleteModel(option)
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .buttonStyle(.borderless)
+                }
+            } else {
+                Button("Скачать") {
+                    store.downloadModel(option)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(store.modelDownloadInProgress != nil)
+            }
+        }
+        .padding(.vertical, 6)
+        .padding(.horizontal, 4)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if isDownloaded { store.modelID = option.id }
+        }
+    }
+}
+
 struct SettingsSheet: View {
     @ObservedObject var store: JobStore
 
@@ -727,11 +801,6 @@ struct SettingsSheet: View {
             get: { store.languageID },
             set: { newValue in store.languageID = newValue }
         )
-        let modelBinding = Binding<String>(
-            get: { store.modelID },
-            set: { newValue in store.modelID = newValue }
-        )
-
         return VStack(alignment: .leading, spacing: 16) {
             Text("Настройки").font(.title3).bold()
 
@@ -770,20 +839,23 @@ struct SettingsSheet: View {
             }
 
             VStack(alignment: .leading, spacing: 6) {
-                Text("Модель распознавания (whisper)")
+                Text("Модели распознавания (whisper)")
                     .font(.subheadline)
-                Picker("", selection: modelBinding) {
-                    ForEach(WhisperModelOption.all) { option in
-                        Text(option.id == WhisperModelOption.recommended().id
-                             ? "\(option.title) — рекомендовано для этого Mac"
-                             : option.title)
-                        .tag(option.id)
-                    }
-                }
-                .labelsHidden()
                 Text("Твой Mac: \(MacHardware.summaryText)")
                     .font(.caption)
                     .foregroundColor(.secondary)
+
+                VStack(spacing: 0) {
+                    ForEach(WhisperModelOption.all) { option in
+                        WhisperModelRow(store: store, option: option, isSelected: store.modelID == option.id)
+                        if option.id != WhisperModelOption.all.last?.id {
+                            Divider()
+                        }
+                    }
+                }
+                .padding(8)
+                .background(Color(nsColor: .textBackgroundColor))
+                .cornerRadius(8)
             }
 
             Divider()

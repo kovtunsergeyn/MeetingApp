@@ -10,6 +10,7 @@ import AVFoundation
 final class SystemAudioRecorder: NSObject, ObservableObject, SCStreamDelegate {
     @Published var isRecording = false
     @Published var permissionDenied = false
+    @Published var lastErrorMessage: String? = nil
 
     private var stream: SCStream?
     private var assetWriter: AVAssetWriter?
@@ -18,9 +19,13 @@ final class SystemAudioRecorder: NSObject, ObservableObject, SCStreamDelegate {
     private let sampleQueue = DispatchQueue(label: "ru.sk.meetingapp.system-audio")
 
     func start() async -> URL? {
+        lastErrorMessage = nil
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-            guard let display = content.displays.first else { return nil }
+            guard let display = content.displays.first else {
+                lastErrorMessage = "Не нашёл ни одного экрана для захвата звука (SCShareableContent.displays пуст)."
+                return nil
+            }
 
             let filter = SCContentFilter(display: display, excludingWindows: [])
             let config = SCStreamConfiguration()
@@ -45,7 +50,10 @@ final class SystemAudioRecorder: NSObject, ObservableObject, SCStreamDelegate {
             ]
             let input = AVAssetWriterInput(mediaType: .audio, outputSettings: settings)
             input.expectsMediaDataInRealTime = true
-            guard writer.canAdd(input) else { return nil }
+            guard writer.canAdd(input) else {
+                lastErrorMessage = "AVAssetWriter отказался принять аудиодорожку (canAdd(input) == false)."
+                return nil
+            }
             writer.add(input)
             writer.startWriting()
 
@@ -61,6 +69,7 @@ final class SystemAudioRecorder: NSObject, ObservableObject, SCStreamDelegate {
             isRecording = true
             return url
         } catch {
+            lastErrorMessage = "\(error)"
             permissionDenied = true
             return nil
         }

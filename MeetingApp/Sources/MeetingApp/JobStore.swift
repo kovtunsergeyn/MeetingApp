@@ -121,9 +121,12 @@ final class JobStore: ObservableObject {
 
         audioRecorder.start()
 
+        appendLog("Запускаю запись встречи…")
+
         Task {
             guard let systemURL = await systemAudioRecorder.start() else {
-                appendLog("Не удалось начать запись системного звука — проверь разрешение «Запись экрана» для MeetingApp в Системных настройках.")
+                let detail = systemAudioRecorder.lastErrorMessage ?? "причина неизвестна"
+                appendLog("Не удалось начать запись системного звука: \(detail)")
                 meetingRecordingPermissionIssue = true
                 audioRecorder.cancel()
                 return
@@ -240,6 +243,56 @@ final class JobStore: ObservableObject {
     private var historyURL: URL { return URL(fileURLWithPath: baseDir + "/history.json") }
     private var modelsDir: String { return NSHomeDirectory() + "/whisper-models" }
     private var modelPath: String { return modelsDir + "/" + selectedModel.fileName }
+
+    // MARK: - Управление моделями whisper (скачать / удалить)
+
+    @Published var modelDownloadInProgress: String? = nil
+
+    func isModelDownloaded(_ option: WhisperModelOption) -> Bool {
+        return FileManager.default.fileExists(atPath: modelsDir + "/" + option.fileName)
+    }
+
+    func modelFileSizeText(_ option: WhisperModelOption) -> String? {
+        let path = modelsDir + "/" + option.fileName
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+              let size = attrs[.size] as? Int64 else { return nil }
+        return ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
+    }
+
+    func downloadModel(_ option: WhisperModelOption) {
+        guard modelDownloadInProgress == nil else { return }
+        modelDownloadInProgress = option.id
+        Task {
+            appendLog("Скачиваю модель \(option.fileName)…")
+            let result = await runScript(
+                name: "install_dep.sh",
+                arguments: ["model", option.id, option.fileName, option.downloadURL],
+                jobID: nil
+            )
+            if result.exitCode == 0 {
+                appendLog("Модель \(option.fileName) готова.")
+            } else {
+                appendLog("Не удалось скачать модель \(option.fileName) (код \(result.exitCode)).")
+            }
+            modelDownloadInProgress = nil
+        }
+    }
+
+    // Не даём удалить модель, которая сейчас выбрана как активная — иначе
+    // следующая задача просто не найдёт файл посреди обработки.
+    func deleteModel(_ option: WhisperModelOption) {
+        guard option.id != modelID else {
+            appendLog("Нельзя удалить активную модель — сначала выбери другую.")
+            return
+        }
+        let path = modelsDir + "/" + option.fileName
+        do {
+            try FileManager.default.removeItem(atPath: path)
+            appendLog("Модель \(option.fileName) удалена.")
+        } catch {
+            appendLog("Не удалось удалить модель \(option.fileName): \(error.localizedDescription)")
+        }
+    }
 
     // Процесс текущей стадии — нужен, чтобы уметь ставить на паузу.
     private var currentProcess: Process?
