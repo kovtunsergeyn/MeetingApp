@@ -539,7 +539,7 @@ struct MeetingDetectedSheet: View {
                 .font(.title3).bold()
 
             if let platform = store.detectedMeetingPlatform {
-                Text("Обнаружена активная вкладка: \(platform). Начать запись и потом сделать транскрипт с саммари?")
+                Text("Похоже, сейчас идёт встреча (\(platform)) — по открытой вкладке браузера или по календарю. Начать запись и потом сделать транскрипт с саммари?")
                     .font(.callout)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

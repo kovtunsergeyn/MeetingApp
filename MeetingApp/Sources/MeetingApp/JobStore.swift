@@ -49,6 +49,7 @@ final class JobStore: ObservableObject {
     let audioRecorder = AudioRecorder()
     let systemAudioRecorder = SystemAudioRecorder()
     private let meetingDetector = BrowserMeetingDetector()
+    private let calendarDetector = CalendarMeetingDetector()
 
     // MARK: - Автоопределение и запись встреч (ВКС)
 
@@ -57,7 +58,13 @@ final class JobStore: ObservableObject {
         : UserDefaults.standard.bool(forKey: "meetingDetectionEnabled") {
         didSet {
             UserDefaults.standard.set(meetingDetectionEnabled, forKey: "meetingDetectionEnabled")
-            if meetingDetectionEnabled { meetingDetector.start() } else { meetingDetector.stop() }
+            if meetingDetectionEnabled {
+                meetingDetector.start()
+                calendarDetector.start()
+            } else {
+                meetingDetector.stop()
+                calendarDetector.stop()
+            }
         }
     }
     @Published var detectedMeetingURL: String? = nil
@@ -75,8 +82,12 @@ final class JobStore: ObservableObject {
         meetingDetector.onMeetingDetected = { [weak self] url, platform in
             self?.handleMeetingDetected(url: url, platform: platform)
         }
+        calendarDetector.onMeetingDetected = { [weak self] url, platform in
+            self?.handleMeetingDetected(url: url, platform: platform)
+        }
         guard meetingDetectionEnabled else { return }
         meetingDetector.start()
+        calendarDetector.start()
     }
 
     private func handleMeetingDetected(url: String, platform: String) {

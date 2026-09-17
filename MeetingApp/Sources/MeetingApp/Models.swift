@@ -331,6 +331,19 @@ enum MeetingLinkDetector {
         }
         return nil
     }
+
+    // Ищет ссылку на встречу внутри произвольного текста (например, в описании
+    // или месте события календаря, где ссылка — лишь часть текста).
+    static func firstMeetingLink(in text: String) -> (url: String, platform: String)? {
+        let tokens = text.split(whereSeparator: { $0.isWhitespace || $0.isNewline })
+        for token in tokens {
+            let candidate = String(token)
+            if let platform = matchedPlatformName(in: candidate) {
+                return (candidate, platform)
+            }
+        }
+        return nil
+    }
 }
 
 // MARK: - Браузеры, в которых ищем открытую встречу

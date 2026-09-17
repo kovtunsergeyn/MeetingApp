@@ -29,10 +29,10 @@ final class BrowserMeetingDetector {
             for browser in MonitoredBrowser.all {
                 guard self.isRunning(browser.processName) else { continue }
                 guard let url = self.frontTabURL(for: browser) else { continue }
-                if let platform = MeetingLinkDetector.matchedPlatformName(in: url) {
+                if let match = MeetingLinkDetector.firstMeetingLink(in: url) {
                     let callback = self.onMeetingDetected
                     DispatchQueue.main.async {
-                        callback?(url, platform)
+                        callback?(match.url, match.platform)
                     }
                     return
                 }

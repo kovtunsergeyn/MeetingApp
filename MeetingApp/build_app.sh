@@ -41,7 +41,11 @@ cat > "$APP_BUNDLE/Contents/Info.plist" << 'EOF'
     <key>NSMicrophoneUsageDescription</key>
     <string>Нужно для записи голоса и последующей транскрибации.</string>
     <key>NSAppleEventsUsageDescription</key>
-    <string>Нужно, чтобы сохранять саммари встреч в приложение Заметки.</string>
+    <string>Нужно, чтобы сохранять саммари в Заметки и определять открытую встречу по вкладке браузера.</string>
+    <key>NSCalendarsFullAccessUsageDescription</key>
+    <string>Нужно, чтобы находить в календаре встречи со ссылкой на видеозвонок и предлагать их записать.</string>
+    <key>NSCalendarsUsageDescription</key>
+    <string>Нужно, чтобы находить в календаре встречи со ссылкой на видеозвонок и предлагать их записать.</string>
 </dict>
 </plist>
 EOF
