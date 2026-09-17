@@ -12,6 +12,8 @@ final class SystemAudioRecorder: NSObject, ObservableObject, SCStreamDelegate {
     @Published var isRecording = false
     @Published var permissionDenied = false
     @Published var lastErrorMessage: String? = nil
+    // Разрешение выдано, но текущий процесс его уже не увидит — нужен перезапуск.
+    @Published var needsRestartForPermission = false
 
     private var stream: SCStream?
     private var assetWriter: AVAssetWriter?
@@ -21,18 +23,21 @@ final class SystemAudioRecorder: NSObject, ObservableObject, SCStreamDelegate {
 
     func start() async -> URL? {
         lastErrorMessage = nil
+        needsRestartForPermission = false
 
-        // ScreenCaptureKit сам по себе ненадёжно показывает системный диалог
-        // согласия — то опаздывает, то не появляется вовсе, и тогда сразу
-        // прилетает -3801, будто пользователь отказался. Поэтому сначала
-        // явно проверяем и запрашиваем через CoreGraphics: если уже разрешено —
-        // идём дальше сразу, если нет — показываем диалог и ждём ответа.
+        // Важно: статус этого разрешения macOS кэширует на всё время жизни
+        // процесса. Даже когда пользователь нажмёт «Разрешить», текущий запущенный
+        // процесс будет по-прежнему видеть «доступа нет» — поэтому ждать ответа
+        // бессмысленно, нужен перезапуск приложения (macOS и в своих настройках
+        // показывает для таких приложений кнопку «Завершить и открыть заново»).
         if !CGPreflightScreenCaptureAccess() {
             _ = CGRequestScreenCaptureAccess()
-            let granted = await waitForScreenCaptureAccess(timeout: 30)
+            // Небольшая пауза на случай, если система всё же отдаст доступ сразу.
+            let granted = await waitForScreenCaptureAccess(timeout: 2)
             guard granted else {
-                lastErrorMessage = "Разрешение «Запись экрана» не подтверждено (диалог не был отвечен «Разрешить» в течение 30 секунд)."
+                lastErrorMessage = "Нужно разрешение «Запись экрана». Разреши его в открывшемся диалоге (или в Системных настройках → Конфиденциальность и безопасность → Запись экрана → MeetingApp) и перезапусти приложение — macOS применяет это разрешение только при следующем запуске."
                 permissionDenied = true
+                needsRestartForPermission = true
                 return nil
             }
         }
@@ -86,7 +91,16 @@ final class SystemAudioRecorder: NSObject, ObservableObject, SCStreamDelegate {
             isRecording = true
             return url
         } catch {
-            lastErrorMessage = "\(error)"
+            let code = (error as NSError).code
+            if code == -3801 {
+                // «Пользователь отклонил условия захвата» — на практике это же
+                // сообщение прилетает и когда разрешение выдано, но процесс был
+                // запущен до этого и видит старый статус.
+                lastErrorMessage = "macOS не пускает к записи экрана для текущего запуска приложения. Проверь Системные настройки → Конфиденциальность и безопасность → Запись экрана → MeetingApp и перезапусти приложение — разрешение применяется только при следующем запуске."
+                needsRestartForPermission = true
+            } else {
+                lastErrorMessage = "\(error)"
+            }
             permissionDenied = true
             return nil
         }

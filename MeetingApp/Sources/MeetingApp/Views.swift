@@ -530,10 +530,13 @@ struct MeetingRecordingsTabView: View {
             get: { store.meetingRecordingPermissionIssue },
             set: { store.meetingRecordingPermissionIssue = $0 }
         )) {
+            if store.systemAudioRecorder.needsRestartForPermission {
+                Button("Открыть настройки") { store.openScreenRecordingSettings() }
+                Button("Перезапустить приложение") { store.restartApp() }
+            }
             Button("Ок", role: .cancel) {}
         } message: {
-            Text((store.systemAudioRecorder.lastErrorMessage ?? "Причина неизвестна.")
-                 + "\n\nЕсли дело в разрешении — Системные настройки → Конфиденциальность и безопасность → Запись экрана → MeetingApp, затем попробуй снова.")
+            Text(store.systemAudioRecorder.lastErrorMessage ?? "Причина неизвестна.")
         }
         .alert("Нет доступа к микрофону", isPresented: Binding(
             get: { store.audioRecorder.permissionDenied },

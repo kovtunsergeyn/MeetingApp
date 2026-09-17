@@ -1222,6 +1222,24 @@ final class JobStore: ObservableObject {
         NSWorkspace.shared.open(url)
     }
 
+    // Разрешение «Запись экрана» macOS применяет только к новому запуску
+    // процесса, поэтому после его выдачи приложение нужно перезапустить.
+    func restartApp() {
+        let bundleURL = Bundle.main.bundleURL
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.createsNewApplicationInstance = true
+        NSWorkspace.shared.openApplication(at: bundleURL, configuration: configuration) { _, _ in
+            Task { @MainActor in
+                NSApp.terminate(nil)
+            }
+        }
+    }
+
+    func openScreenRecordingSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
     // MARK: - Фильтрация истории
 
     var filteredJobs: [Job] {
