@@ -1,6 +1,7 @@
 import Foundation
 import ScreenCaptureKit
 import AVFoundation
+import CoreGraphics
 
 // Пишет системный звук (то, что играет из динамиков/наушников — то есть
 // голоса собеседников из Zoom/браузера) в отдельный файл через ScreenCaptureKit.
@@ -20,6 +21,22 @@ final class SystemAudioRecorder: NSObject, ObservableObject, SCStreamDelegate {
 
     func start() async -> URL? {
         lastErrorMessage = nil
+
+        // ScreenCaptureKit сам по себе ненадёжно показывает системный диалог
+        // согласия — то опаздывает, то не появляется вовсе, и тогда сразу
+        // прилетает -3801, будто пользователь отказался. Поэтому сначала
+        // явно проверяем и запрашиваем через CoreGraphics: если уже разрешено —
+        // идём дальше сразу, если нет — показываем диалог и ждём ответа.
+        if !CGPreflightScreenCaptureAccess() {
+            _ = CGRequestScreenCaptureAccess()
+            let granted = await waitForScreenCaptureAccess(timeout: 30)
+            guard granted else {
+                lastErrorMessage = "Разрешение «Запись экрана» не подтверждено (диалог не был отвечен «Разрешить» в течение 30 секунд)."
+                permissionDenied = true
+                return nil
+            }
+        }
+
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
             guard let display = content.displays.first else {
@@ -73,6 +90,17 @@ final class SystemAudioRecorder: NSObject, ObservableObject, SCStreamDelegate {
             permissionDenied = true
             return nil
         }
+    }
+
+    // Ждём, пока пользователь ответит на системный диалог (или до таймаута),
+    // проверяя статус каждые полсекунды.
+    private func waitForScreenCaptureAccess(timeout: TimeInterval) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if CGPreflightScreenCaptureAccess() { return true }
+            try? await Task.sleep(nanoseconds: 500_000_000)
+        }
+        return CGPreflightScreenCaptureAccess()
     }
 
     func stop() async -> URL? {

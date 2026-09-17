@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import CoreAudio
+import CoreGraphics
 
 @MainActor
 final class JobStore: ObservableObject {
@@ -193,7 +194,11 @@ final class JobStore: ObservableObject {
 
         audioRecorder.start()
 
-        appendLog("Запускаю запись встречи…")
+        if !CGPreflightScreenCaptureAccess() {
+            appendLog("Запускаю запись встречи… жду подтверждения разрешения «Запись экрана» в системном диалоге.")
+        } else {
+            appendLog("Запускаю запись встречи…")
+        }
 
         Task {
             guard let systemURL = await systemAudioRecorder.start() else {
