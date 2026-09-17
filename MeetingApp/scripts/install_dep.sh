@@ -38,6 +38,16 @@ case "$COMPONENT" in
     brew install yt-dlp
     ;;
 
+  vad)
+    MODELS_DIR="$HOME/whisper-models"
+    mkdir -p "$MODELS_DIR"
+    echo "Скачиваю детектор речи (VAD)…"
+    curl -L --fail --progress-bar \
+      "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin" \
+      -o "$MODELS_DIR/ggml-silero-v5.1.2.bin.part"
+    mv "$MODELS_DIR/ggml-silero-v5.1.2.bin.part" "$MODELS_DIR/ggml-silero-v5.1.2.bin"
+    ;;
+
   claude)
     export PATH="$HOME/.npm-global/bin:$PATH"
     if ! command -v npm &> /dev/null; then

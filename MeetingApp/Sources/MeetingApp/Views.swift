@@ -851,6 +851,21 @@ struct SettingsSheet: View {
             }
 
             VStack(alignment: .leading, spacing: 6) {
+                Text("Словарь терминов и имён")
+                    .font(.subheadline)
+                TextField("Аббревиатуры, названия систем, фамилии…", text: Binding(
+                    get: { store.glossary },
+                    set: { store.glossary = $0 }
+                ), axis: .vertical)
+                .textFieldStyle(.roundedBorder)
+                .lineLimit(2...4)
+                Text("Аббревиатуры, названия систем и имена через запятую. Помогает распознаванию не коверкать их, а саммари — не додумывать. Держи список коротким: whisper учитывает примерно первые 200 токенов.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
                 Text("Модели распознавания (whisper)")
                     .font(.subheadline)
                 Text("Твой Mac: \(MacHardware.summaryText)")

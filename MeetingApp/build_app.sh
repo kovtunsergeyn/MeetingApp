@@ -122,11 +122,21 @@ echo "3/4 Подписываю .app…"
 # пересборки. Сертификат создаётся один раз и лежит в login-связке ключей.
 ensure_signing_certificate
 if security find-certificate -c "$SIGN_IDENTITY" >/dev/null 2>&1; then
-  codesign --force --deep --sign "$SIGN_IDENTITY" --identifier "ru.sk.meetingapp" "$APP_BUNDLE"
+  echo "   Подписываю сертификатом «$SIGN_IDENTITY»."
+  echo "   Если macOS спросит «codesign хочет получить доступ к ключу» — введи пароль от Mac"
+  echo "   и нажми «Разрешать всегда» (нужно один раз на компьютер, дальше сборка идёт без вопросов)."
+  # Без if провал подписи под set -e обрывал скрипт и оставлял бандл с «сырой»
+  # подписью линковщика — это тихо ломало разрешения macOS.
+  if ! codesign --force --deep --sign "$SIGN_IDENTITY" --identifier "ru.sk.meetingapp" "$APP_BUNDLE"; then
+    echo "   ВНИМАНИЕ: подписать сертификатом не удалось — подписываю ad-hoc."
+    echo "   Разрешения macOS (запись экрана и др.) будут слетать при каждой пересборке."
+    codesign --force --deep --sign - --identifier "ru.sk.meetingapp" "$APP_BUNDLE"
+  fi
 else
   echo "   ВНИМАНИЕ: подписываю ad-hoc — разрешения macOS будут слетать при каждой пересборке."
   codesign --force --deep --sign - --identifier "ru.sk.meetingapp" "$APP_BUNDLE"
 fi
+echo "   Подпись: $(codesign -d -r- "$APP_BUNDLE" 2>&1 | grep designated)"
 
 echo "4/4 Копирую скрипты в $SCRIPTS_TARGET…"
 mkdir -p "$SCRIPTS_TARGET"

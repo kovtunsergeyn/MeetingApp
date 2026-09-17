@@ -139,6 +139,12 @@ struct Dependency: Identifiable, Equatable {
         details: "Скачивает аудио с YouTube по ссылке."
     )
 
+    static let vad = Dependency(
+        id: "vad",
+        title: "Детектор речи (VAD, ~1 МБ)",
+        details: "Вырезает тишину до распознавания: без него на тихих участках появляется мусор, а язык встречи может определиться неверно."
+    )
+
     static func model(_ option: WhisperModelOption) -> Dependency {
         return Dependency(
             id: "model:\(option.id)",

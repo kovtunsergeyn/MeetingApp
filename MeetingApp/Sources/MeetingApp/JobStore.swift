@@ -293,6 +293,12 @@ final class JobStore: ObservableObject {
         didSet { UserDefaults.standard.set(languageID, forKey: "languageID") }
     }
 
+    // Термины, аббревиатуры и имена, которые часто звучат на встречах. Передаются
+    // whisper как подсказка при распознавании и Claude — как справочник при саммари.
+    @Published var glossary: String = UserDefaults.standard.string(forKey: "glossary") ?? "" {
+        didSet { UserDefaults.standard.set(glossary, forKey: "glossary") }
+    }
+
     @Published var modelID: String = UserDefaults.standard.string(forKey: "modelID")
         ?? WhisperModelOption.recommended().id {
         didSet { UserDefaults.standard.set(modelID, forKey: "modelID") }
@@ -677,6 +683,9 @@ final class JobStore: ObservableObject {
         if which("ffmpeg") == nil { missing.append(Dependency.ffmpeg) }
         if which("whisper-cli") == nil { missing.append(Dependency.whisper) }
         if requireYtDlp && which("yt-dlp") == nil { missing.append(Dependency.ytdlp) }
+        if !FileManager.default.fileExists(atPath: modelsDir + "/ggml-silero-v5.1.2.bin") {
+            missing.append(Dependency.vad)
+        }
         if !FileManager.default.fileExists(atPath: modelPath) { missing.append(Dependency.model(selectedModel)) }
         if requireClaude && (which("claude") == nil || !isClaudeAuthenticated()) {
             missing.append(Dependency.claude)
@@ -986,7 +995,7 @@ final class JobStore: ObservableObject {
             startStageTimer(estimatedSeconds: nil)
             let result = await runScript(
                 name: "transcribe.sh",
-                arguments: [job.sourcePath, outDir, languageID, modelPath],
+                arguments: [job.sourcePath, outDir, languageID, modelPath, glossary],
                 jobID: jobID,
                 onOutputLine: { [weak self] chunk in self?.parseTranscribeDuration(chunk) }
             )
@@ -1046,7 +1055,8 @@ final class JobStore: ObservableObject {
                 transcriptPath,
                 job.name,
                 destinations.notes ? "1" : "0",
-                destinations.notion ? "1" : "0"
+                destinations.notion ? "1" : "0",
+                glossary
             ],
             jobID: jobID
         )
@@ -1101,11 +1111,26 @@ final class JobStore: ObservableObject {
         guard let job = jobs.first(where: { $0.id == jobID }) else { return }
         let fm = FileManager.default
         guard fm.fileExists(atPath: job.sourcePath) else { return }
-        let destination = baseDir + "/обработано/" + job.fileName
-        try? fm.moveItem(atPath: job.sourcePath, toPath: destination)
-        if fm.fileExists(atPath: destination) {
+
+        // Все записи встреч называются meeting.m4a, поэтому имя в архиве берём
+        // от названия задачи и при совпадении добавляем номер. Раньше второе
+        // перемещение падало из-за существующего файла, а проверка fileExists
+        // видела чужой файл — и задаче прописывался путь к записи другой встречи.
+        let ext = URL(fileURLWithPath: job.sourcePath).pathExtension
+        let base = job.name.replacingOccurrences(of: "/", with: "-")
+        var destination = baseDir + "/обработано/" + base + (ext.isEmpty ? "" : "." + ext)
+        var counter = 2
+        while fm.fileExists(atPath: destination) {
+            destination = baseDir + "/обработано/" + base + " (\(counter))" + (ext.isEmpty ? "" : "." + ext)
+            counter += 1
+        }
+
+        do {
+            try fm.moveItem(atPath: job.sourcePath, toPath: destination)
             updateJob(jobID) { $0.sourcePath = destination }
             appendLog("Исходник перемещён в «обработано».")
+        } catch {
+            appendLog("Не удалось переместить исходник в «обработано»: \(error.localizedDescription)")
         }
     }
 
