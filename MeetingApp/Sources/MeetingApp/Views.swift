@@ -851,18 +851,21 @@ struct SettingsSheet: View {
             }
 
             VStack(alignment: .leading, spacing: 6) {
-                Text("Словарь терминов и имён")
-                    .font(.subheadline)
-                TextField("Аббревиатуры, названия систем, фамилии…", text: Binding(
-                    get: { store.glossary },
-                    set: { store.glossary = $0 }
-                ), axis: .vertical)
-                .textFieldStyle(.roundedBorder)
-                .lineLimit(2...4)
-                Text("Аббревиатуры, названия систем и имена через запятую. Помогает распознаванию не коверкать их, а саммари — не додумывать. Держи список коротким: whisper учитывает примерно первые 200 токенов.")
+                HStack {
+                    Text("Словарь терминов и имён")
+                        .font(.subheadline)
+                    Spacer()
+                    Button("Открыть словарь…") { store.showGlossarySheet = true }
+                        .controlSize(.small)
+                }
+                Text(store.glossary.isEmpty
+                     ? "Пока пусто — распознавание будет коверкать аббревиатуры и фамилии."
+                     : store.glossary)
                     .font(.caption)
                     .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(2)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             VStack(alignment: .leading, spacing: 6) {
@@ -968,6 +971,58 @@ struct SettingsSheet: View {
         }
         .padding(24)
         .frame(width: 520)
+        .sheet(isPresented: Binding<Bool>(
+            get: { store.showGlossarySheet },
+            set: { store.showGlossarySheet = $0 }
+        )) {
+            GlossarySheet(store: store)
+        }
+    }
+}
+
+// MARK: - Словарь терминов (отдельное окно: список длинный, в строку не помещается)
+
+struct GlossarySheet: View {
+    @ObservedObject var store: JobStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Словарь терминов и имён")
+                .font(.title3).bold()
+
+            Text("Аббревиатуры, названия систем, фамилии и имена — через запятую. Подсказывается распознаванию, чтобы оно не коверкало их, и Claude при сборе саммари, чтобы он не расшифровывал их наугад.")
+                .font(.callout)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            TextEditor(text: Binding(
+                get: { store.glossary },
+                set: { store.glossary = $0 }
+            ))
+            .font(.body)
+            .frame(minHeight: 260)
+            .padding(6)
+            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.secondary.opacity(0.35)))
+
+            HStack(alignment: .firstTextBaseline) {
+                Text("Слов в словаре: \(glossaryTermCount). Whisper учитывает примерно первые 200 токенов — самые важные термины держи в начале.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 12)
+                Button("Готово") { store.showGlossarySheet = false }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(24)
+        .frame(width: 560)
+    }
+
+    private var glossaryTermCount: Int {
+        return store.glossary
+            .components(separatedBy: CharacterSet(charactersIn: ",\n"))
+            .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+            .count
     }
 }
 

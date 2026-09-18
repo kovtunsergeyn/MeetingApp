@@ -170,8 +170,8 @@ echo "   Подпись: $(codesign -d -r- "$APP_BUNDLE" 2>&1 | grep designated)
 
 echo "4/4 Копирую скрипты в $SCRIPTS_TARGET…"
 mkdir -p "$SCRIPTS_TARGET"
-cp scripts/*.sh "$SCRIPTS_TARGET/"
-chmod +x "$SCRIPTS_TARGET"/*.sh
+cp scripts/*.sh scripts/*.py "$SCRIPTS_TARGET/"
+chmod +x "$SCRIPTS_TARGET"/*.sh "$SCRIPTS_TARGET"/*.py
 
 echo ""
 echo "Готово: $(pwd)/$APP_BUNDLE"

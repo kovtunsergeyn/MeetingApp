@@ -17,6 +17,7 @@ final class JobStore: ObservableObject {
     @Published var searchText: String = ""
     @Published var stageFilter: String = "all"
     @Published var showSettings: Bool = false
+    @Published var showGlossarySheet: Bool = false
     @Published var pendingDependencies: [Dependency] = []
     @Published var showDependencySheet: Bool = false
     @Published var isInstallingDependency: Bool = false
@@ -252,8 +253,17 @@ final class JobStore: ObservableObject {
             jobID: nil
         )
 
-        try? FileManager.default.removeItem(at: systemURL)
-        if let micURL { try? FileManager.default.removeItem(at: micURL) }
+        // Исходные дорожки не удаляем: сведённый файл нужен, чтобы переслушать
+        // встречу, а распознаём мы дорожки по отдельности — так речь не
+        // накладывается друг на друга и видно, кто говорит. Удалим их сразу
+        // после успешной транскрибации.
+        let fm = FileManager.default
+        try? fm.removeItem(atPath: destDir + "/system.m4a")
+        try? fm.moveItem(at: systemURL, to: URL(fileURLWithPath: destDir + "/system.m4a"))
+        if let micURL {
+            try? fm.removeItem(atPath: destDir + "/mic.m4a")
+            try? fm.moveItem(at: micURL, to: URL(fileURLWithPath: destDir + "/mic.m4a"))
+        }
 
         guard result.exitCode == 0, FileManager.default.fileExists(atPath: mixedPath) else {
             appendLog("Не удалось свести аудио встречи (код \(result.exitCode)).")
@@ -999,9 +1009,24 @@ final class JobStore: ObservableObject {
 
             let outDir = baseDir + "/транскрипты/" + job.name
             startStageTimer(estimatedSeconds: nil)
+
+            // У записей встреч рядом со сведённым файлом лежат исходные дорожки:
+            // системный звук (собеседники) и микрофон (я). Если они на месте —
+            // распознаём их по отдельности и сшиваем в диалог с подписями.
+            let tracks = separateTracks(for: job)
+            if tracks.mic != nil {
+                appendLog("Распознаю дорожки раздельно — в транскрипте будет видно, кто говорит.")
+            }
             let result = await runScript(
                 name: "transcribe.sh",
-                arguments: [job.sourcePath, outDir, languageID, modelPath, glossary],
+                arguments: [
+                    tracks.main,
+                    outDir,
+                    languageID,
+                    modelPath,
+                    glossary,
+                    tracks.mic ?? ""
+                ],
                 jobID: jobID,
                 onOutputLine: { [weak self] chunk in self?.parseTranscribeDuration(chunk) }
             )
@@ -1027,6 +1052,7 @@ final class JobStore: ObservableObject {
             let transcriptPath = outDir + "/transcript.txt"
             updateJob(jobID) { $0.transcriptPath = transcriptPath; $0.stage = .transcribed }
             appendLog("Транскрипт готов: \(transcriptPath)")
+            removeSeparateTracks(for: job)
         } else {
             appendLog("Транскрипт уже есть — пропускаю распознавание: \(job.fileName)")
         }
@@ -1111,6 +1137,34 @@ final class JobStore: ObservableObject {
         if destinations.notes { parts.append("Заметки") }
         if destinations.notion { parts.append("Notion") }
         return parts.isEmpty ? "без сохранения" : parts.joined(separator: " + ")
+    }
+
+    // MARK: - Раздельные дорожки записи встречи
+
+    // Рядом со сведённым meeting.m4a запись встречи оставляет исходные дорожки:
+    // system.m4a — голоса собеседников, mic.m4a — свой голос. Распознавание по
+    // отдельности даёт разметку «кто говорит» и не портит речь наложением.
+    private func separateTracks(for job: Job) -> (main: String, mic: String?) {
+        guard job.isMeetingRecording else { return (job.sourcePath, nil) }
+        let fm = FileManager.default
+        let dir = URL(fileURLWithPath: job.sourcePath).deletingLastPathComponent().path
+        let systemPath = dir + "/system.m4a"
+        let micPath = dir + "/mic.m4a"
+        guard fm.fileExists(atPath: systemPath), fm.fileExists(atPath: micPath) else {
+            return (job.sourcePath, nil)
+        }
+        return (systemPath, micPath)
+    }
+
+    // После удачного распознавания отдельные дорожки не нужны: остаётся
+    // сведённый файл, которого достаточно, чтобы переслушать спорное место.
+    private func removeSeparateTracks(for job: Job) {
+        guard job.isMeetingRecording else { return }
+        let dir = URL(fileURLWithPath: job.sourcePath).deletingLastPathComponent().path
+        let fm = FileManager.default
+        for name in ["system.m4a", "mic.m4a"] where fm.fileExists(atPath: dir + "/" + name) {
+            try? fm.removeItem(atPath: dir + "/" + name)
+        }
     }
 
     private func moveSourceToArchive(jobID: UUID) {

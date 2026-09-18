@@ -1,6 +1,11 @@
 #!/bin/bash
 # Шаг 1: медиафайл (видео ИЛИ аудио) -> transcript.txt
-# Использование: ./transcribe.sh "/путь/к/файлу" "/папка/для/результата" [язык|auto] [/путь/к/модели.bin] ["словарь терминов"]
+# Использование: ./transcribe.sh "/путь/к/файлу" "/папка/для/результата" [язык|auto] [/путь/к/модели.bin] ["словарь терминов"] [/путь/к/дорожке микрофона]
+#
+# Шестой аргумент — отдельная дорожка микрофона. Если он передан, первый файл
+# считается системным звуком (собеседники), дорожки распознаются по отдельности
+# и сшиваются в диалог с подписями «Я» и «Собеседники»: наложенная речь так не
+# портит распознавание, и в саммари видно, кто что сказал.
 set -e
 
 INPUT_FILE="$1"
@@ -8,10 +13,12 @@ OUT_DIR="$2"
 LANGUAGE="${3:-auto}"
 MODEL="${4:-$HOME/whisper-models/ggml-medium.bin}"
 GLOSSARY="$5"
+MIC_FILE="$6"
 VAD_MODEL="$HOME/whisper-models/ggml-silero-v5.1.2.bin"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 if [ -z "$INPUT_FILE" ] || [ -z "$OUT_DIR" ]; then
-  echo "Использование: ./transcribe.sh <входной файл> <папка результата> [язык] [модель] [словарь]"
+  echo "Использование: ./transcribe.sh <входной файл> <папка результата> [язык] [модель] [словарь] [дорожка микрофона]"
   exit 1
 fi
 
@@ -34,6 +41,12 @@ echo "DURATION_SECONDS:${DURATION:-0}"
 # ffmpeg одинаково работает и с видео, и с чистым аудио:
 # из видео берётся звуковая дорожка, аудио просто перекодируется в нужный формат.
 ffmpeg -y -i "$INPUT_FILE" -vn -ar 16000 -ac 1 -c:a pcm_s16le "$OUT_DIR/audio.wav" -loglevel error
+
+HAS_MIC=0
+if [ -n "$MIC_FILE" ] && [ -s "$MIC_FILE" ]; then
+  HAS_MIC=1
+  ffmpeg -y -i "$MIC_FILE" -vn -ar 16000 -ac 1 -c:a pcm_s16le "$OUT_DIR/mic.wav" -loglevel error
+fi
 
 # =====================================================================
 # ОПРЕДЕЛЕНИЕ ЯЗЫКА
@@ -66,8 +79,6 @@ if [ "$LANGUAGE" = "auto" ] && [ "$DUR_INT" -gt 90 ]; then
   fi
 fi
 
-echo "Распознаю речь (это самая долгая часть)… язык: $LANGUAGE"
-
 # =====================================================================
 # ЗАЩИТА ОТ ЗАЦИКЛИВАНИЯ
 # Модель «залипает» на тишине, музыке ожидания и фоновом шуме,
@@ -76,41 +87,69 @@ echo "Распознаю речь (это самая долгая часть)…
 #           (именно перенос контекста и раскручивает петлю)
 #   -et     порог энтропии: слишком однообразный вывод бракуется
 #   -lpt    порог правдоподобия: неуверенные сегменты отбрасываются
-#   -nt     без таймкодов в .txt
-# =====================================================================
-WHISPER_ARGS=(
-  -m "$MODEL"
-  -f "$OUT_DIR/audio.wav"
-  -l "$LANGUAGE"
-  -otxt
-  -of "$OUT_DIR/transcript"
-  -nt
-  -mc 0
-  -et 2.8
-  -lpt -1.0
-)
-
+#   -nt     без таймкодов в .txt (для одной дорожки)
 # Словарь терминов и имён: без него whisper коверкает аббревиатуры
 # (слышит обрывки аббревиатур) и фамилии. Из-за -mc 0 обычная подсказка действовала
 # бы только на первое окно, поэтому --carry-initial-prompt подставляет её в
 # каждое окно — при этом ранее распознанный текст по-прежнему не переносится,
 # так что защита от зацикливания сохраняется.
+# VAD (если модель рядом) вырезает тишину ещё до распознавания: зацикливаться
+# становится не на чем, заодно пропадают галлюцинации вида «you», «foreign».
+# =====================================================================
+run_whisper() {
+  local wav="$1"
+  local prefix="$2"
+  local format="$3"   # txt — одна дорожка, srt — нужны таймкоды для сшивки
+  local args=(
+    -m "$MODEL"
+    -f "$wav"
+    -l "$LANGUAGE"
+    -of "$prefix"
+    -mc 0
+    -et 2.8
+    -lpt -1.0
+  )
+
+  if [ "$format" = "srt" ]; then
+    args+=( -osrt )
+  else
+    args+=( -otxt -nt )
+  fi
+
+  if [ -n "$GLOSSARY" ]; then
+    args+=( --prompt "$GLOSSARY" --carry-initial-prompt )
+  fi
+
+  if [ -f "$VAD_MODEL" ]; then
+    args+=( --vad --vad-model "$VAD_MODEL" )
+  fi
+
+  whisper-cli "${args[@]}"
+}
+
 if [ -n "$GLOSSARY" ]; then
   echo "Использую словарь терминов."
-  WHISPER_ARGS+=( --prompt "$GLOSSARY" --carry-initial-prompt )
 fi
-
-# Если рядом лежит модель VAD — включаем детектор речи: тишина вырезается
-# ещё до распознавания, и зацикливаться становится просто не на чем
-# (заодно пропадают галлюцинации вида «you», «foreign» на тихих участках).
 if [ -f "$VAD_MODEL" ]; then
   echo "Использую VAD (тишина будет пропущена)…"
-  WHISPER_ARGS+=( --vad --vad-model "$VAD_MODEL" )
 else
   echo "VAD-модель не найдена — работаю без неё."
 fi
 
-whisper-cli "${WHISPER_ARGS[@]}"
+if [ "$HAS_MIC" = "1" ]; then
+  echo "Распознаю речь собеседников (1 из 2)… язык: $LANGUAGE"
+  run_whisper "$OUT_DIR/audio.wav" "$OUT_DIR/others" srt
+  echo "Распознаю речь с микрофона (2 из 2)… язык: $LANGUAGE"
+  run_whisper "$OUT_DIR/mic.wav" "$OUT_DIR/me" srt
+
+  echo "Свожу дорожки в диалог…"
+  python3 "$SCRIPT_DIR/merge_tracks.py" \
+    "$OUT_DIR/others.srt" "$OUT_DIR/me.srt" "$OUT_DIR/transcript.txt"
+  rm -f "$OUT_DIR/others.srt" "$OUT_DIR/me.srt"
+else
+  echo "Распознаю речь (это самая долгая часть)… язык: $LANGUAGE"
+  run_whisper "$OUT_DIR/audio.wav" "$OUT_DIR/transcript" txt
+fi
 
 if [ ! -s "$OUT_DIR/transcript.txt" ]; then
   echo "Транскрипт пустой или не создан."
@@ -127,7 +166,7 @@ awk 'BEGIN { prev = "" }
 }' "$OUT_DIR/transcript.txt" > "$OUT_DIR/transcript.clean.txt"
 mv "$OUT_DIR/transcript.clean.txt" "$OUT_DIR/transcript.txt"
 
-# Промежуточный wav больше не нужен — он весит заметно больше текста.
-rm -f "$OUT_DIR/audio.wav"
+# Промежуточные wav больше не нужны — они весят заметно больше текста.
+rm -f "$OUT_DIR/audio.wav" "$OUT_DIR/mic.wav"
 
 echo "Транскрипт сохранён: $OUT_DIR/transcript.txt"
