@@ -1,12 +1,36 @@
 #!/bin/bash
-# Собирает MeetingApp.app и раскладывает скрипты в ~/Встречи/scripts
+# Собирает .app и раскладывает скрипты в папку данных этой сборки
 set -e
 
-APP_NAME="MeetingApp"
+# Две сборки из одного кода:
+#   ./build_app.sh          — промышленная (ей пользуются каждый день)
+#   ./build_app.sh --test   — тестовая, для проверки правок
+# У тестовой свой идентификатор пакета, своя папка данных и свои настройки,
+# поэтому она не может испортить рабочую историю обработки. Идентификатор разный
+# ещё и потому, что macOS выдаёт разрешения (запись экрана, микрофон, календарь)
+# именно по нему: тестовой сборке разрешения выдаются отдельно и один раз.
+BUILD_KIND="prod"
+if [ "$1" = "--test" ]; then
+  BUILD_KIND="test"
+fi
+
 BUILD_DIR=".build/release"
-APP_BUNDLE="$APP_NAME.app"
-SCRIPTS_TARGET="$HOME/Встречи/scripts"
 SIGN_IDENTITY="MeetingApp Local Signing"
+
+if [ "$BUILD_KIND" = "test" ]; then
+  APP_NAME="MeetingApp-Test"
+  BUNDLE_ID="ru.sk.meetingapp.test"
+  DISPLAY_NAME="Обработка встреч (тест)"
+  DATA_FOLDER="Встречи-тест"
+else
+  APP_NAME="MeetingApp"
+  BUNDLE_ID="ru.sk.meetingapp"
+  DISPLAY_NAME="Обработка встреч"
+  DATA_FOLDER="Встречи"
+fi
+
+APP_BUNDLE="$APP_NAME.app"
+SCRIPTS_TARGET="$HOME/$DATA_FOLDER/scripts"
 
 # Создаёт локальный самоподписанный сертификат для подписи приложения, если
 # его ещё нет в связке ключей. Нужен для того, чтобы «designated requirement»
@@ -65,32 +89,38 @@ CONF
   fi
 }
 
-echo "1/4 Собираю приложение…"
+echo "1/4 Собираю приложение ($BUILD_KIND)…"
 swift build -c release
 
 echo "2/4 Формирую .app…"
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources"
-cp "$BUILD_DIR/$APP_NAME" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
+# Исполняемый файл в .build всегда называется MeetingApp (имя таргета SPM),
+# внутри бандла — по имени сборки, чтобы тестовая и рабочая различались в Dock.
+cp "$BUILD_DIR/MeetingApp" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 cp Resources/AppIcon.icns "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
 
-cat > "$APP_BUNDLE/Contents/Info.plist" << 'EOF'
+cat > "$APP_BUNDLE/Contents/Info.plist" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>MeetingApp</string>
+    <string>$APP_NAME</string>
     <key>CFBundleDisplayName</key>
-    <string>Обработка встреч</string>
+    <string>$DISPLAY_NAME</string>
     <key>CFBundleIdentifier</key>
-    <string>ru.sk.meetingapp</string>
+    <string>$BUNDLE_ID</string>
     <key>CFBundleVersion</key>
     <string>3.0</string>
     <key>CFBundleShortVersionString</key>
     <string>3.0</string>
     <key>CFBundleExecutable</key>
-    <string>MeetingApp</string>
+    <string>$APP_NAME</string>
+    <!-- Папка с данными приложения в домашней директории: у тестовой сборки
+         своя, чтобы проверки не трогали рабочую историю обработки. -->
+    <key>MADataFolder</key>
+    <string>$DATA_FOLDER</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundlePackageType</key>
@@ -127,14 +157,14 @@ if security find-certificate -c "$SIGN_IDENTITY" >/dev/null 2>&1; then
   echo "   и нажми «Разрешать всегда» (нужно один раз на компьютер, дальше сборка идёт без вопросов)."
   # Без if провал подписи под set -e обрывал скрипт и оставлял бандл с «сырой»
   # подписью линковщика — это тихо ломало разрешения macOS.
-  if ! codesign --force --deep --sign "$SIGN_IDENTITY" --identifier "ru.sk.meetingapp" "$APP_BUNDLE"; then
+  if ! codesign --force --deep --sign "$SIGN_IDENTITY" --identifier "$BUNDLE_ID" "$APP_BUNDLE"; then
     echo "   ВНИМАНИЕ: подписать сертификатом не удалось — подписываю ad-hoc."
     echo "   Разрешения macOS (запись экрана и др.) будут слетать при каждой пересборке."
-    codesign --force --deep --sign - --identifier "ru.sk.meetingapp" "$APP_BUNDLE"
+    codesign --force --deep --sign - --identifier "$BUNDLE_ID" "$APP_BUNDLE"
   fi
 else
   echo "   ВНИМАНИЕ: подписываю ad-hoc — разрешения macOS будут слетать при каждой пересборке."
-  codesign --force --deep --sign - --identifier "ru.sk.meetingapp" "$APP_BUNDLE"
+  codesign --force --deep --sign - --identifier "$BUNDLE_ID" "$APP_BUNDLE"
 fi
 echo "   Подпись: $(codesign -d -r- "$APP_BUNDLE" 2>&1 | grep designated)"
 
@@ -145,4 +175,9 @@ chmod +x "$SCRIPTS_TARGET"/*.sh
 
 echo ""
 echo "Готово: $(pwd)/$APP_BUNDLE"
-echo "Перемести его в /Applications и запусти двойным кликом."
+if [ "$BUILD_KIND" = "test" ]; then
+  echo "Это тестовая сборка: свои настройки, данные в ~/$DATA_FOLDER и отдельные разрешения macOS."
+  echo "Установка: rm -rf \"/Applications/$APP_BUNDLE\" && cp -R \"$APP_BUNDLE\" /Applications/"
+else
+  echo "Перемести его в /Applications и запусти двойным кликом."
+fi

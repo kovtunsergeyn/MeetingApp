@@ -1,6 +1,7 @@
 # Артефакты сборки
 MeetingApp/.build/
 MeetingApp/MeetingApp.app/
+MeetingApp/MeetingApp-Test.app/
 *.zip
 
 # Личные данные пользователя — никогда не коммитим
@@ -10,4 +11,3 @@ MeetingApp/MeetingApp.app/
 *.mp4
 *.mov
 
-.DS_Store

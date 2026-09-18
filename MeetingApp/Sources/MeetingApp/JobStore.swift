@@ -285,7 +285,7 @@ final class JobStore: ObservableObject {
     // MARK: - Настройки
 
     @Published var scriptsDir: String = UserDefaults.standard.string(forKey: "scriptsDir")
-        ?? (NSHomeDirectory() + "/Встречи/scripts") {
+        ?? (NSHomeDirectory() + "/" + JobStore.dataFolderName + "/scripts") {
         didSet { UserDefaults.standard.set(scriptsDir, forKey: "scriptsDir") }
     }
 
@@ -327,7 +327,13 @@ final class JobStore: ObservableObject {
 
     // MARK: - Пути
 
-    private var baseDir: String { return NSHomeDirectory() + "/Встречи" }
+    // Папка с данными задаётся в Info.plist (ключ MADataFolder) при сборке:
+    // у промышленной сборки это ~/Встречи, у тестовой — ~/Встречи-тест,
+    // чтобы проверки правок не трогали рабочую историю обработки.
+    static let dataFolderName: String =
+        (Bundle.main.object(forInfoDictionaryKey: "MADataFolder") as? String) ?? "Встречи"
+
+    private var baseDir: String { return NSHomeDirectory() + "/" + JobStore.dataFolderName }
     private var historyURL: URL { return URL(fileURLWithPath: baseDir + "/history.json") }
     private var modelsDir: String { return NSHomeDirectory() + "/whisper-models" }
     private var modelPath: String { return modelsDir + "/" + selectedModel.fileName }
