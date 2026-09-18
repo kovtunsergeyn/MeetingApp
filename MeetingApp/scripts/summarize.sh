@@ -1,6 +1,6 @@
 #!/bin/bash
-# Шаг 2: транскрипт -> саммари -> сохранение в Заметки и/или в базу Notion «Саммари встреч»
-# Использование: ./summarize.sh "/путь/к/transcript.txt" "Название встречи" [saveNotes:0|1] [saveNotion:0|1] ["словарь терминов"]
+# Шаг 2: транскрипт -> саммари -> сохранение в Заметки и/или в базу Notion
+# Использование: ./summarize.sh "/путь/к/transcript.txt" "Название встречи" [saveNotes:0|1] [saveNotion:0|1] ["словарь терминов"] ["имя базы Notion"]
 set -e
 
 TRANSCRIPT="$1"
@@ -8,6 +8,7 @@ NAME="$2"
 SAVE_NOTES="${3:-0}"
 SAVE_NOTION="${4:-1}"
 GLOSSARY="$5"
+NOTION_DATABASE="${6:-Саммари встреч}"
 
 if [ -z "$TRANSCRIPT" ] || [ ! -s "$TRANSCRIPT" ]; then
   echo "Не найден или пуст файл транскрипта: $TRANSCRIPT"
@@ -30,10 +31,11 @@ echo "Делаю саммари…"
 NOTION_INSTRUCTION=""
 if [ "$SAVE_NOTION" = "1" ]; then
   NOTION_INSTRUCTION="
-Затем сохрани саммари новой записью в базе Notion «Саммари встреч».
-Найди эту базу поиском по названию. Заполни атрибуты по смыслу транскрипта:
+Затем сохрани саммари новой записью в базе Notion «$NOTION_DATABASE».
+Найди эту базу поиском по названию. Если такой базы нет — создай её. Заполни атрибуты по смыслу транскрипта:
 Название, Дата встречи, Направление, Участники, Теги, Статус.
-Прикрепи файл транскрипта ($TRANSCRIPT) к записи в поле «Исходный файл».
+Прикрепи файл транскрипта ($TRANSCRIPT) к записи в поле для файлов,
+если такое поле в базе есть.
 Если файл больше ~180 КБ — разбей его на несколько частей по смысловым границам
 и прикрепи все части.
 В самой последней строке ответа выведи только ссылку на созданную страницу Notion."
@@ -44,14 +46,23 @@ fi
 
 ALLOWED_TOOLS=(--allowedTools "Read" "Write")
 if [ "$SAVE_NOTION" = "1" ]; then
-  # Имя MCP-сервера зависит от того, как подключён Notion в Claude Code
-  # (Настройки -> Connectors). У большинства при подключении через
-  # аккаунт claude.ai сервер называется "claude.ai Notion", что даёт
-  # инструменты вида mcp__claude_ai_Notion__notion-search и т.п.
-  # Если у тебя Notion подключён иначе, узнай точное имя командой:
-  #   claude mcp list
-  # и поправь паттерн ниже под него.
-  ALLOWED_TOOLS+=("mcp__claude_ai_Notion__*")
+  # Имя MCP-сервера зависит от того, как у человека подключён Notion в Claude
+  # Code: через аккаунт claude.ai сервер называется «claude.ai Notion», при
+  # ручном подключении — как угодно. Поэтому спрашиваем у самого claude и
+  # превращаем имя в префикс инструментов (точки и пробелы → подчёркивания).
+  NOTION_SERVER=$(claude mcp list 2>/dev/null \
+    | grep -i "notion" \
+    | head -1 \
+    | sed 's/ - .*//' \
+    | sed 's/:.*//' \
+    | sed 's/[^A-Za-z0-9]/_/g')
+  if [ -n "$NOTION_SERVER" ]; then
+    echo "Notion подключён как «$NOTION_SERVER»."
+    ALLOWED_TOOLS+=("mcp__${NOTION_SERVER}__*")
+  else
+    echo "Не нашёл подключённый Notion в claude mcp list — пробую стандартное имя."
+    ALLOWED_TOOLS+=("mcp__claude_ai_Notion__*")
+  fi
 fi
 
 GLOSSARY_INSTRUCTION=""

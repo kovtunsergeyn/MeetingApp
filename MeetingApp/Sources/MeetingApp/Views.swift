@@ -716,7 +716,7 @@ struct SaveDestinationSheet: View {
                 get: { store.pendingSaveNotes },
                 set: { store.pendingSaveNotes = $0 }
             ))
-            Toggle("В Notion (база «Саммари встреч»)", isOn: Binding(
+            Toggle("В Notion (база «\(store.notionDatabaseName)»)", isOn: Binding(
                 get: { store.pendingSaveNotion },
                 set: { store.pendingSaveNotion = $0 }
             ))
@@ -849,6 +849,20 @@ struct SettingsSheet: View {
                     }
                 }
                 .labelsHidden()
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("База Notion для саммари")
+                    .font(.subheadline)
+                TextField("Саммари встреч", text: Binding(
+                    get: { store.notionDatabaseName },
+                    set: { store.notionDatabaseName = $0 }
+                ))
+                .textFieldStyle(.roundedBorder)
+                Text("Имя базы в твоём Notion. Если такой базы нет, она будет создана при первом сохранении.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             VStack(alignment: .leading, spacing: 6) {

@@ -100,8 +100,12 @@ if [ "$FULL" = "1" ]; then
   if [ -z "$MODEL" ] || ! command -v whisper-cli >/dev/null 2>&1; then
     echo "  — пропускаю: нет whisper-cli или модели"
   else
-    say -v Milena -o "$WORK_DIR/system.aiff" "Это системный звук, говорит собеседник" 2>/dev/null
-    say -v Yuri -o "$WORK_DIR/mic.aiff" "А это микрофон, говорю я сам" 2>/dev/null
+    # Голоса есть не на каждом Mac — если нужного нет, берём системный по умолчанию.
+    voice_args() {
+      say -v '?' 2>/dev/null | grep -q "^$1 " && echo "-v $1" || echo ""
+    }
+    say $(voice_args Milena) -o "$WORK_DIR/system.aiff" "Это системный звук, говорит собеседник" 2>/dev/null
+    say $(voice_args Yuri) -o "$WORK_DIR/mic.aiff" "А это микрофон, говорю я сам" 2>/dev/null
     ffmpeg -y -i "$WORK_DIR/system.aiff" -c:a aac "$WORK_DIR/system.m4a" -loglevel error
     ffmpeg -y -i "$WORK_DIR/mic.aiff" -c:a aac "$WORK_DIR/mic.m4a" -loglevel error
 

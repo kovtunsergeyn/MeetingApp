@@ -311,6 +311,14 @@ final class JobStore: ObservableObject {
         didSet { UserDefaults.standard.set(glossary, forKey: "glossary") }
     }
 
+    // Куда складывать саммари в Notion. У каждого своя база, поэтому имя —
+    // настройка, а не зашитая в код строка. Если базы с таким именем нет,
+    // Claude создаст её при первом сохранении.
+    @Published var notionDatabaseName: String =
+        UserDefaults.standard.string(forKey: "notionDatabaseName") ?? "Саммари встреч" {
+        didSet { UserDefaults.standard.set(notionDatabaseName, forKey: "notionDatabaseName") }
+    }
+
     @Published var modelID: String = UserDefaults.standard.string(forKey: "modelID")
         ?? WhisperModelOption.recommended().id {
         didSet { UserDefaults.standard.set(modelID, forKey: "modelID") }
@@ -1126,7 +1134,8 @@ final class JobStore: ObservableObject {
                 job.name,
                 destinations.notes ? "1" : "0",
                 destinations.notion ? "1" : "0",
-                glossary
+                glossary,
+                notionDatabaseName
             ],
             jobID: jobID
         )
