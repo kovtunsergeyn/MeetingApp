@@ -212,6 +212,55 @@ group("Переезд тестовой сборки не забирает общ
           "тестовая сборка не забрала модели себе")
 }
 
+group("Чтение истории старых версий") {
+    // Историю пишет само приложение, и с каждым новым свойством задачи старые
+    // файлы становятся «неполными». Разбор обязан это переживать: иначе одна
+    // недостающая строчка обнуляет весь список — так уже терялась история.
+    let legacy = """
+    [{"id":"CCF6B47F-36C0-4497-8B08-DB54B0A733AF","sourcePath":"/tmp/a.m4a","name":"Встреча из старой версии",
+      "stage":"done","createdAt":"2026-09-17T09:52:27Z","updatedAt":"2026-09-17T09:53:50Z"}]
+    """
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    do {
+        let jobs = try decoder.decode([Job].self, from: Data(legacy.utf8))
+        equal(jobs.count, 1, "старая история читается")
+        equal(jobs.first?.name, "Встреча из старой версии", "название сохранилось")
+        equal(jobs.first?.stage, JobStage.done, "стадия сохранилась")
+        check(jobs.first?.savedToNotes == false, "новое поле получает значение по умолчанию")
+        check(jobs.first?.isMeetingRecording == false, "новое поле не ломает разбор")
+    } catch {
+        check(false, "старая история не прочиталась: \(error)")
+    }
+
+    // И то, что пишет сегодняшняя версия, тоже должно читаться обратно.
+    do {
+        var job = Job(sourcePath: "/tmp/b.m4a")
+        job.savedToNotes = true
+        job.isMeetingRecording = true
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let data = try encoder.encode([job])
+        let back = try decoder.decode([Job].self, from: data)
+        equal(back.first?.savedToNotes, true, "запись и чтение согласованы")
+    } catch {
+        check(false, "свежая история не прочиталась: \(error)")
+    }
+}
+
+group("Защита истории обработки") {
+    // История — единственная запись о проделанной работе, и однажды она уже
+    // обнулилась: приложение записало пустой список поверх четырёх задач.
+    check(!HistorySafety.allowsWrite(newJobCount: 0, existingFileSize: 2071),
+          "пустая история не пишется поверх непустой")
+    check(HistorySafety.allowsWrite(newJobCount: 4, existingFileSize: 2071),
+          "непустая история пишется поверх непустой")
+    check(HistorySafety.allowsWrite(newJobCount: 0, existingFileSize: 0),
+          "пустую историю можно записать, если файла ещё нет")
+    check(HistorySafety.allowsWrite(newJobCount: 0, existingFileSize: 4),
+          "пустую историю можно переписать поверх пустой")
+}
+
 // MARK: - Итог
 
 print("")

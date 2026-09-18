@@ -182,3 +182,21 @@ public enum LayoutMigration {
         return true
     }
 }
+
+// MARK: - Защита истории обработки
+
+// История — единственная запись о проделанной работе: файлы на диске есть, но
+// какие задачи были, чем закончились и куда выгружены, знает только она.
+// Однажды она уже обнулилась, поэтому пустую историю поверх непустой не пишем:
+// это всегда ошибка, а не осмысленное действие. Настоящую очистку человек
+// делает по одной задаче, и тогда список пустеет постепенно.
+public enum HistorySafety {
+    public static func allowsWrite(newJobCount: Int, existingFileSize: Int) -> Bool {
+        if newJobCount > 0 { return true }
+        // Пустой или отсутствующий файл перезаписать можно — терять нечего.
+        return existingFileSize <= emptyFileThreshold
+    }
+
+    // «[]» с переводом строки — это и есть пустая история.
+    public static let emptyFileThreshold = 8
+}

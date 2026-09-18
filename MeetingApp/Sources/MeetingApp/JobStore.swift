@@ -494,6 +494,7 @@ final class JobStore: ObservableObject {
         decoder.dateDecodingStrategy = .iso8601
         do {
             jobs = try decoder.decode([Job].self, from: data)
+            appendLog("История загружена: задач — \(jobs.count).")
         } catch {
             appendLog("История задач повреждена и не загружена, файл не тронут: \(error.localizedDescription)")
         }
@@ -503,9 +504,20 @@ final class JobStore: ObservableObject {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = .prettyPrinted
-        if let data = try? encoder.encode(jobs) {
-            try? data.write(to: historyURL)
+        guard let data = try? encoder.encode(jobs) else { return }
+
+        let existing = (try? Data(contentsOf: historyURL)) ?? Data()
+        guard HistorySafety.allowsWrite(newJobCount: jobs.count, existingFileSize: existing.count) else {
+            appendLog("Пустая история не записана поверх существующей — файл не тронут.")
+            return
         }
+
+        // Предыдущая версия остаётся рядом: если что-то пойдёт не так,
+        // историю можно вернуть, не выясняя, кто и когда её перезаписал.
+        if !existing.isEmpty {
+            try? existing.write(to: URL(fileURLWithPath: historyURL.path + ".bak"))
+        }
+        try? data.write(to: historyURL)
     }
 
     func appendLog(_ line: String) {
