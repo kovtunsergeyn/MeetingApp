@@ -52,7 +52,17 @@ case "$TARGET" in
 Если файл больше ~180 КБ — разбей его на части по смысловым границам и прикрепи все."
     fi
 
-    echo "Выгружаю саммари в Notion…"
+    # Ограничение по времени. Без него зависшая выгрузка крутится бесконечно:
+    # кнопка в приложении «думает», процесс живёт, а понять, что происходит,
+    # нечем. Восемь минут — с запасом: обычная выгрузка занимает меньше минуты.
+    TIMEOUT_SECONDS=480
+    EXPORT_LOG="$(dirname "$SUMMARY")/export.log"
+
+    trap 'echo "Выгрузка прервана по времени ($TIMEOUT_SECONDS с). Подробности: $EXPORT_LOG"; exit 4' TERM
+    ( sleep "$TIMEOUT_SECONDS"; kill -TERM $$ 2>/dev/null ) &
+    WATCHDOG=$!
+
+    echo "Выгружаю саммари в Notion… (подробный вывод: $EXPORT_LOG)"
     claude -p "Прочитай файл саммари: $SUMMARY (название встречи: \"$NAME\").
 Сохрани его новой записью в базе Notion «$NOTION_DATABASE».
 Найди базу поиском по названию; если такой базы нет — создай её.
@@ -62,7 +72,10 @@ case "$TARGET" in
 
 В самой последней строке ответа выведи только ссылку на созданную страницу." \
       --allowedTools "Read" "mcp__${NOTION_SERVER}__*" \
-      --max-turns 30
+      --max-turns 30 </dev/null 2>&1 | tee -a "$EXPORT_LOG"
+
+    kill "$WATCHDOG" 2>/dev/null
+    trap - TERM
     ;;
 
   notes)

@@ -100,3 +100,26 @@ public enum JobFolder {
         return (jobs, added)
     }
 }
+
+// MARK: - Переименование встречи
+
+// Название встречи попадает в имена папок, поэтому переименование — это не
+// только смена подписи в списке: нужно аккуратно перенести папку с
+// транскриптом и поправить пути, а если что-то мешает — оставить файлы на
+// месте и сменить только название. Терять файлы из-за переименования нельзя.
+public enum JobRename {
+    // Убираем из названия то, что не годится для имени папки.
+    public static func sanitized(_ name: String) -> String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleaned = trimmed
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: "-")
+        return String(cleaned.prefix(120))
+    }
+
+    // Новый путь для файла, лежащего в переименованной папке.
+    public static func movedPath(_ path: String, fromFolder oldFolder: String, toFolder newFolder: String) -> String {
+        guard path.hasPrefix(oldFolder + "/") else { return path }
+        return newFolder + String(path.dropFirst(oldFolder.count))
+    }
+}

@@ -165,6 +165,9 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     @objc private func openApp() {
         NSApp.activate(ignoringOtherApps: true)
         for window in NSApp.windows where window.canBecomeMain {
+            // Свёрнутое окно сначала нужно развернуть: пока оно в Dock, оно не
+            // может стать главным, и попытка вывести его вперёд ничего не даёт.
+            if window.isMiniaturized { window.deminiaturize(nil) }
             window.makeKeyAndOrderFront(nil)
             break
         }

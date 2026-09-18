@@ -32,18 +32,36 @@ struct ContentView: View {
     @ObservedObject var store: JobStore
 
     private var jobs: [Job] {
+        let search = store.searchText.trimmingCharacters(in: .whitespaces).lowercased()
+
+        // Основа зависит от раздела: в обработке — то, что ещё делается
+        // (и только что доделалось), в истории — всё.
+        var result: [Job]
         switch store.selectedSection {
-        case .queue:
-            // Только что законченные задачи остаются в очереди ещё десять
-            // минут: иначе результат работы исчезает с экрана ровно в тот
-            // момент, когда человек его ждал, и это выглядит как потеря.
+        case .queue where store.stageFilter == "all":
+            // Готовые задачи остаются в очереди ещё десять минут: иначе
+            // результат исчезает с экрана ровно тогда, когда его ждали.
             let recently = Date().addingTimeInterval(-600)
-            return JobStore.sortedForDisplay(store.jobs.filter {
-                $0.stage != .done || $0.updatedAt > recently
-            })
-        case .history:
-            return store.stageFilter == "meetings" ? store.meetingRecordingJobs : store.filteredJobs
+            result = store.jobs.filter { $0.stage != .done || $0.updatedAt > recently }
+        default:
+            // Как только выбран фильтр, он и решает, что показывать: раньше
+            // правило «в обработке только незавершённые» гасило выбор целиком,
+            // и список выглядел пустым.
+            result = store.jobs
         }
+
+        // Фильтр и поиск работают одинаково в обоих разделах.
+        switch store.stageFilter {
+        case "all": break
+        case "meetings": result = result.filter { $0.isMeetingRecording }
+        default: result = result.filter { $0.stage.rawValue == store.stageFilter }
+        }
+
+        if !search.isEmpty {
+            result = result.filter { $0.name.lowercased().contains(search) }
+        }
+
+        return JobStore.sortedForDisplay(result)
     }
 
     var body: some View {
@@ -161,22 +179,10 @@ struct ContentView: View {
             .help("Добавить видео или аудио для расшифровки")
         }
 
-        if store.selectedSection == .history {
-            ToolbarItem(placement: .automatic) {
-                Picker("Фильтр", selection: Binding(
-                    get: { store.stageFilter },
-                    set: { store.stageFilter = $0 }
-                )) {
-                    Text("Все").tag("all")
-                    Text("Только записи встреч").tag("meetings")
-                    Divider()
-                    ForEach(JobStage.allCases, id: \.rawValue) { stage in
-                        Text(stage.title).tag(stage.rawValue)
-                    }
-                }
-                .frame(width: 200)
-            }
+        ToolbarItem(placement: .automatic) {
+            SearchToolbarView(store: store)
         }
+
     }
 }
 
@@ -187,6 +193,71 @@ struct JobListView: View {
     let jobs: [Job]
 
     var body: some View {
+        // Фильтр вставляется в безопасную область списка, а не кладётся сверху
+        // в стопку: иначе его перекрывала панель окна, и сбросить выбранный
+        // фильтр было нечем — список выглядел пустым без объяснения.
+        listContent
+            .safeAreaInset(edge: .top, spacing: 0) {
+                VStack(spacing: 0) {
+                    filterBar
+                    Divider()
+                }
+                .background(.bar)
+            }
+    }
+
+    private var filterBar: some View {
+        HStack(spacing: 6) {
+            Menu {
+                Button("Все") { store.stageFilter = "all" }
+                Button("Только записи встреч") { store.stageFilter = "meetings" }
+                Divider()
+                ForEach(JobStage.allCases, id: \.rawValue) { stage in
+                    Button(stage.title) { store.stageFilter = stage.rawValue }
+                }
+            } label: {
+                Label("Показывать: " + filterTitle, systemImage: "line.3.horizontal.decrease.circle")
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            .menuStyle(.borderlessButton)
+            .font(.callout)
+            .layoutPriority(1)
+
+            Spacer(minLength: 4)
+
+            // Название фильтра бывает длинным, и в узкой колонке кнопка
+            // «Сбросить» переносилась по одной букве в столбик. Значок не
+            // зависит от ширины и читается всегда.
+            if store.stageFilter != "all" {
+                Button {
+                    store.stageFilter = "all"
+                } label: {
+                    Image(systemName: "arrow.uturn.backward.circle")
+                }
+                .buttonStyle(.borderless)
+                .help("Показать все задачи")
+                .accessibilityLabel("Сбросить фильтр")
+            }
+
+            Text("\(jobs.count)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize()
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+    }
+
+    private var filterTitle: String {
+        switch store.stageFilter {
+        case "all": return "все"
+        case "meetings": return "записи встреч"
+        default: return JobStage(rawValue: store.stageFilter)?.title.lowercased() ?? "все"
+        }
+    }
+
+    private var listContent: some View {
         Group {
             if jobs.isEmpty {
                 EmptyStateView(store: store, section: store.selectedSection)
@@ -199,6 +270,8 @@ struct JobListView: View {
                     JobRowView(store: store, job: job)
                         .tag(job.id)
                         .contextMenu {
+                            Button("Переименовать…") { store.startRename(jobID: job.id) }
+                            Divider()
                             if store.hasSummary(job) {
                                 Button("Показать саммари в Finder") { store.revealSummary(jobID: job.id) }
                                 Button("Сохранить копию саммари…") { store.saveSummaryCopy(jobID: job.id) }
@@ -211,10 +284,6 @@ struct JobListView: View {
                 .listStyle(.inset)
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // Поиск нужен только в истории: в обработке задач единицы, а поле
-        // вытесняло из панели кнопку добавления файла.
-        .modifier(SearchIfNeeded(store: store))
     }
 }
 
@@ -237,13 +306,29 @@ struct EmptyStateView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
-            Button("Добавить файл…") { store.pickMediaFiles() }
+            if store.stageFilter != "all" || !store.searchText.isEmpty {
+                // Выход из пустого экрана должен быть на самом экране: искать
+                // управление где-то ещё, когда ничего не видно, неоткуда.
+                Button("Показать все задачи") {
+                    store.stageFilter = "all"
+                    store.searchText = ""
+                    store.isSearchVisible = false
+                }
+                .buttonStyle(.borderedProminent)
+            } else {
+                Button("Добавить файл…") { store.pickMediaFiles() }
+            }
         }
         .padding(28)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    private var isFiltered: Bool {
+        return store.stageFilter != "all" || !store.searchText.isEmpty
+    }
+
     private var title: String {
+        if isFiltered { return "Под фильтр ничего не подошло" }
         switch section {
         case .queue: return "Очередь пуста"
         case .history: return store.searchText.isEmpty ? "Пока ничего не обработано" : "Ничего не найдено"
@@ -251,6 +336,16 @@ struct EmptyStateView: View {
     }
 
     private var subtitle: String {
+        if isFiltered {
+            var parts: [String] = []
+            switch store.stageFilter {
+            case "all": break
+            case "meetings": parts.append("только записи встреч")
+            default: parts.append("статус «\(JobStage(rawValue: store.stageFilter)?.title ?? store.stageFilter)»")
+            }
+            if !store.searchText.isEmpty { parts.append("поиск «\(store.searchText)»") }
+            return "Выбрано: " + parts.joined(separator: ", ") + "."
+        }
         switch section {
         case .queue: return "Здесь появятся задачи, которые сейчас распознаются или ждут очереди. Готовые остаются тут ещё десять минут, а дальше живут в истории."
         case .history: return store.searchText.isEmpty
@@ -305,19 +400,42 @@ struct AddWorkView: View {
 }
 
 
-// MARK: - Поиск только там, где он нужен
+// MARK: - Поиск
 
-struct SearchIfNeeded: ViewModifier {
+// Поиск живёт значком: поле разворачивается по нажатию и сворачивается, когда
+// запрос очищен. Постоянное поле вытесняло из панели кнопку добавления файла.
+struct SearchToolbarView: View {
     @ObservedObject var store: JobStore
 
-    func body(content: Content) -> some View {
-        if store.selectedSection == .history {
-            content.searchable(text: Binding(
-                get: { store.searchText },
-                set: { store.searchText = $0 }
-            ), placement: .toolbar, prompt: "Поиск по названию")
-        } else {
-            content
+    var body: some View {
+        HStack(spacing: 4) {
+            if store.isSearchVisible {
+                TextField("Поиск по названию", text: Binding(
+                    get: { store.searchText },
+                    set: { store.searchText = $0 }
+                ))
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 200)
+                .onSubmit { if store.searchText.isEmpty { store.isSearchVisible = false } }
+
+                Button {
+                    store.searchText = ""
+                    store.isSearchVisible = false
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                }
+                .buttonStyle(.borderless)
+                .help("Закрыть поиск")
+                .accessibilityLabel("Закрыть поиск")
+            } else {
+                Button {
+                    store.isSearchVisible = true
+                } label: {
+                    Image(systemName: "magnifyingglass")
+                }
+                .help("Найти встречу по названию")
+                .accessibilityLabel("Найти встречу по названию")
+            }
         }
     }
 }

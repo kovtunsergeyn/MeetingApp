@@ -41,6 +41,17 @@ struct AppCommands: Commands {
         }
 
         CommandGroup(after: .toolbar) {
+            Menu("Показывать") {
+                Button("Все") { store.stageFilter = "all" }
+                Button("Только записи встреч") { store.stageFilter = "meetings" }
+                Divider()
+                ForEach(JobStage.allCases, id: \.rawValue) { stage in
+                    Button(stage.title) { store.stageFilter = stage.rawValue }
+                }
+            }
+            Button("Сбросить фильтр") { store.stageFilter = "all" }
+                .keyboardShortcut("0", modifiers: .command)
+            Divider()
             Button("Показать лог") { LogWindowController.shared.show(store: store) }
                 .keyboardShortcut("l", modifiers: [.command, .shift])
             Divider()
