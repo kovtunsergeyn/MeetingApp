@@ -46,7 +46,24 @@ ffmpeg -y -i "$INPUT_FILE" -vn -ar 16000 -ac 1 -c:a pcm_s16le "$OUT_DIR/audio.wa
 HAS_MIC=0
 if [ -n "$MIC_FILE" ] && [ -s "$MIC_FILE" ]; then
   HAS_MIC=1
-  ffmpeg -y -i "$MIC_FILE" -vn -ar 16000 -ac 1 -c:a pcm_s16le "$OUT_DIR/mic.wav" -loglevel error
+  ffmpeg -y -i "$MIC_FILE" -vn -ar 16000 -ac 1 -c:a pcm_s16le "$OUT_DIR/mic_raw.wav" -loglevel error
+
+  # Микрофон слышит и колонки: без наушников голоса собеседников попадают в
+  # «свою» дорожку и приписываются владельцу компьютера. Чистим копию перед
+  # распознаванием — оригинал не трогаем.
+  #
+  # Приём простой и предсказуемый: там, где звучит системный звук, микрофон
+  # приглушается (боковая цепь). Настоящее подавление эха точнее, но требует
+  # адаптивного фильтра; здесь важнее не испортить собственную речь.
+  echo "Убираю из микрофона звук, пришедший из колонок…"
+  if ffmpeg -y -i "$OUT_DIR/mic_raw.wav" -i "$OUT_DIR/audio.wav" -filter_complex \
+      "[1:a]highpass=f=150,alimiter=limit=0.9[ref];[0:a][ref]sidechaincompress=threshold=0.03:ratio=12:attack=6:release=180:makeup=1[out]" \
+      -map "[out]" -ar 16000 -ac 1 -c:a pcm_s16le "$OUT_DIR/mic.wav" -loglevel error; then
+    rm -f "$OUT_DIR/mic_raw.wav"
+  else
+    echo "Не удалось обработать микрофон — распознаю как есть."
+    mv "$OUT_DIR/mic_raw.wav" "$OUT_DIR/mic.wav"
+  fi
 fi
 
 # =====================================================================
@@ -144,8 +161,14 @@ if [ "$HAS_MIC" = "1" ]; then
   run_whisper "$OUT_DIR/mic.wav" "$OUT_DIR/me" srt
 
   echo "Свожу дорожки в диалог…"
-  python3 "$SCRIPT_DIR/merge_tracks.py" \
-    "$OUT_DIR/others.srt" "$OUT_DIR/me.srt" "$OUT_DIR/transcript.txt"
+  # Код 3 от сшивки означает «речи не нашлось» — пробрасываем его как есть,
+  # чтобы приложение показало понятную причину, а не «ошибка, код 1».
+  if ! python3 "$SCRIPT_DIR/merge_tracks.py" \
+      "$OUT_DIR/others.srt" "$OUT_DIR/me.srt" "$OUT_DIR/transcript.txt"; then
+    MERGE_CODE=$?
+    rm -f "$OUT_DIR/others.srt" "$OUT_DIR/me.srt" "$OUT_DIR/audio.wav" "$OUT_DIR/mic.wav"
+    exit "$MERGE_CODE"
+  fi
   rm -f "$OUT_DIR/others.srt" "$OUT_DIR/me.srt"
 else
   echo "Распознаю речь (это самая долгая часть)… язык: $LANGUAGE"
@@ -171,6 +194,6 @@ awk 'BEGIN { prev = "" }
 mv "$OUT_DIR/transcript.clean.txt" "$OUT_DIR/transcript.txt"
 
 # Промежуточные wav больше не нужны — они весят заметно больше текста.
-rm -f "$OUT_DIR/audio.wav" "$OUT_DIR/mic.wav"
+rm -f "$OUT_DIR/audio.wav" "$OUT_DIR/mic.wav" "$OUT_DIR/mic_raw.wav"
 
 echo "Транскрипт сохранён: $OUT_DIR/transcript.txt"

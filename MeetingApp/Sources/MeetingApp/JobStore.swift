@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import SwiftUI
 import CoreAudio
 import CoreGraphics
 import ServiceManagement
@@ -17,6 +18,7 @@ final class JobStore: ObservableObject {
 
     // Интерфейсное состояние (вместо @State — property wrapper-макросы не работают без Xcode).
     @Published var selectedSection: AppSection = .queue
+    @Published var sidebarVisibility: NavigationSplitViewVisibility = .all
     @Published var selectedJobID: UUID? = nil
     @Published var searchText: String = ""
     @Published var stageFilter: String = "all"
@@ -432,6 +434,9 @@ final class JobStore: ObservableObject {
         migrateLegacyLayoutIfNeeded()
         createDirectories()
         loadHistory()
+        backfillMetaFiles()
+        adoptJobsFoundOnDisk()
+        adoptInterruptedRecordings()
         normalizeStagesOnLaunch()
         MeetingLinkDetector.customPatterns = customMeetingDomains.map { ($0.domain, $0.label) }
         startMeetingDetection()
@@ -441,6 +446,109 @@ final class JobStore: ObservableObject {
 
     private func createDirectories() {
         layout.createDirectories()
+    }
+
+    // MARK: - Подхват оборванных записей
+
+    // Если приложение убили посреди встречи, дорожки остались на диске, а
+    // задачи для них никто не создал. Находим такие папки при запуске и
+    // возвращаем встречу в обработку: несжатый звук переживает обрыв, терять
+    // его из-за упавшего приложения незачем.
+    private func adoptInterruptedRecordings() {
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(atPath: recordingsDir) else { return }
+
+        for entry in entries.sorted() {
+            let folder = recordingsDir + "/" + entry
+            var isDirectory: ObjCBool = false
+            guard fm.fileExists(atPath: folder, isDirectory: &isDirectory), isDirectory.boolValue else { continue }
+
+            // Папку, у которой уже есть задача, не трогаем.
+            let known = jobs.contains { job in
+                job.sourcePath.hasPrefix(folder + "/") || JobFolder.folder(for: job) == folder
+            }
+            if known { continue }
+
+            let systemTrack = folder + "/" + MeetingTracks.systemTrackName
+            let micTrack = folder + "/" + MeetingTracks.micTrackName
+            let mixed = folder + "/meeting.m4a"
+            guard fm.fileExists(atPath: systemTrack) || fm.fileExists(atPath: mixed) else { continue }
+
+            // Сводим то, что осталось, и ставим в очередь.
+            Task { await finishInterruptedRecording(folder: folder,
+                                                    name: entry,
+                                                    systemTrack: systemTrack,
+                                                    micTrack: micTrack,
+                                                    mixed: mixed) }
+        }
+    }
+
+    private func finishInterruptedRecording(folder: String, name: String,
+                                            systemTrack: String, micTrack: String,
+                                            mixed: String) async {
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: mixed), fm.fileExists(atPath: systemTrack) {
+            let result = await runScript(
+                name: "mix_meeting_audio.sh",
+                arguments: [systemTrack, fm.fileExists(atPath: micTrack) ? micTrack : "/dev/null", mixed],
+                jobID: nil
+            )
+            guard result.exitCode == 0 else {
+                appendLog("Не удалось восстановить прерванную запись «\(name)».")
+                return
+            }
+        }
+        guard fm.fileExists(atPath: mixed) else { return }
+
+        var job = Job(sourcePath: mixed)
+        job.name = name
+        job.isMeetingRecording = true
+        jobs.append(job)
+        appendLog("Найдена прерванная запись «\(name)» — вернул её в обработку.")
+        saveHistory()
+        JobFolder.writeMeta(for: job)
+        startNextIfIdle()
+    }
+
+    // MARK: - Восстановление задач по папкам
+
+    // История — только указатель. Если задача есть на диске, но пропала из
+    // истории, возвращаем её на место: файлы важнее списка.
+    // Для задач, сделанных до появления meta.json, запись рядом с файлами
+    // создаётся при первом запуске — иначе старые встречи остались бы
+    // незащищёнными от потери истории.
+    private func backfillMetaFiles() {
+        var written = 0
+        for job in jobs {
+            guard let folder = JobFolder.folder(for: job) else { continue }
+            guard !FileManager.default.fileExists(atPath: JobFolder.metaPath(inFolder: folder)) else { continue }
+            if JobFolder.writeMeta(for: job) { written += 1 }
+        }
+        if written > 0 {
+            appendLog("Записи о задачах разложены по их папкам: \(written).")
+        }
+    }
+
+    private func adoptJobsFoundOnDisk() {
+        let onDisk = JobFolder.scan(layout: layout)
+        guard !onDisk.isEmpty else { return }
+        let merged = JobFolder.merge(history: jobs, foundOnDisk: onDisk)
+        guard merged.added > 0 else { return }
+        jobs = merged.jobs
+        saveHistory()
+        appendLog("Восстановлено задач по папкам на диске: \(merged.added).")
+    }
+
+    // То же самое по требованию — пункт меню на случай, когда история
+    // пострадала, а файлы на месте.
+    func rebuildHistoryFromFolders() {
+        let onDisk = JobFolder.scan(layout: layout)
+        let merged = JobFolder.merge(history: jobs, foundOnDisk: onDisk)
+        jobs = merged.jobs
+        saveHistory()
+        appendLog(merged.added > 0
+                  ? "История пересобрана: добавлено задач — \(merged.added)."
+                  : "История пересобрана: всё, что есть на диске, уже было в списке.")
     }
 
     // MARK: - Переезд настроек со старого идентификатора
@@ -1151,6 +1259,7 @@ final class JobStore: ObservableObject {
                     $0.lastError = message
                     $0.lastErrorDetail = errorDetail(from: result.output)
                 }
+                selectedJobID = jobID
                 appendLog("\(message): \(job.fileName)")
                 MeetingNotifier.shared.notifyJobFinished(name: job.name, succeeded: false, detail: message)
                 return
@@ -1212,6 +1321,9 @@ final class JobStore: ObservableObject {
         }
 
         updateJob(jobID) { $0.stage = .done; $0.lastError = nil; $0.lastErrorDetail = nil }
+        // Показываем результат сразу: иначе задача просто исчезает из очереди,
+        // и непонятно, куда делась работа.
+        selectedJobID = jobID
         appendLog("Саммари готово: \(job.fileName). Выгрузить его можно кнопками в подробностях задачи.")
         MeetingNotifier.shared.notifyJobFinished(name: job.name, succeeded: true, detail: nil)
 
@@ -1570,6 +1682,9 @@ final class JobStore: ObservableObject {
         change(&jobs[index])
         jobs[index].updatedAt = Date()
         saveHistory()
+        // Состояние задачи дублируется в её собственную папку: даже если общая
+        // история пострадает, по папкам её можно собрать заново.
+        JobFolder.writeMeta(for: jobs[index])
     }
 
     // MARK: - Запуск shell-скриптов

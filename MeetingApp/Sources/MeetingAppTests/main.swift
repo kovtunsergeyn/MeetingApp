@@ -85,19 +85,21 @@ group("Разбор вывода") {
 
 group("Дорожки записи встречи") {
     let dir = "/tmp/meeting"
-    let both: (String) -> Bool = { $0.hasSuffix("system.m4a") || $0.hasSuffix("mic.m4a") }
+    let both: (String) -> Bool = {
+        $0.hasSuffix(MeetingTracks.systemTrackName) || $0.hasSuffix(MeetingTracks.micTrackName)
+    }
 
     let separate = MeetingTracks.select(sourcePath: dir + "/meeting.m4a",
                                         isMeetingRecording: true,
                                         fileExists: both)
-    equal(separate.mainPath, dir + "/system.m4a", "собеседники — это системный звук")
-    equal(separate.micPath, dir + "/mic.m4a", "свой голос — это микрофон")
+    equal(separate.mainPath, dir + "/" + MeetingTracks.systemTrackName, "собеседники — это системный звук")
+    equal(separate.micPath, dir + "/" + MeetingTracks.micTrackName, "свой голос — это микрофон")
 
     // Одна дорожка без второй превратила бы разговор в монолог: распознаём
     // тогда сведённый файл целиком.
     let onlySystem = MeetingTracks.select(sourcePath: dir + "/meeting.m4a",
                                           isMeetingRecording: true,
-                                          fileExists: { $0.hasSuffix("system.m4a") })
+                                          fileExists: { $0.hasSuffix(MeetingTracks.systemTrackName) })
     equal(onlySystem.mainPath, dir + "/meeting.m4a", "без микрофона берём сведённый файл")
     check(onlySystem.micPath == nil, "без микрофона вторая дорожка не передаётся")
 
@@ -259,6 +261,50 @@ group("Защита истории обработки") {
           "пустую историю можно записать, если файла ещё нет")
     check(HistorySafety.allowsWrite(newJobCount: 0, existingFileSize: 4),
           "пустую историю можно переписать поверх пустой")
+}
+
+group("Папка встречи как источник правды") {
+    let fm = FileManager.default
+    let home = NSTemporaryDirectory() + "folder-truth-" + UUID().uuidString
+    defer { try? fm.removeItem(atPath: home) }
+
+    let layout = AppLayout(homeDirectory: home, folderName: "MeetingApp")
+    layout.createDirectories()
+
+    // Две задачи: одна с транскриптом, другая только с исходником.
+    let folderA = layout.transcriptsDir + "/Встреча А"
+    try? fm.createDirectory(atPath: folderA, withIntermediateDirectories: true)
+    fm.createFile(atPath: folderA + "/transcript.txt", contents: Data("текст".utf8))
+    var jobA = Job(sourcePath: layout.processedDir + "/a.m4a")
+    jobA.name = "Встреча А"
+    jobA.transcriptPath = folderA + "/transcript.txt"
+    jobA.stage = .done
+    check(JobFolder.writeMeta(for: jobA), "запись о задаче сохранена рядом с транскриптом")
+
+    let folderB = layout.recordingsDir + "/Встреча Б"
+    try? fm.createDirectory(atPath: folderB, withIntermediateDirectories: true)
+    var jobB = Job(sourcePath: folderB + "/meeting.m4a")
+    jobB.name = "Встреча Б"
+    jobB.isMeetingRecording = true
+    check(JobFolder.writeMeta(for: jobB), "запись о задаче сохранена рядом с записью встречи")
+
+    let onDisk = JobFolder.scan(layout: layout)
+    equal(onDisk.count, 2, "обе задачи нашлись на диске")
+
+    // Главное свойство: история потеряна целиком, но собирается заново.
+    let restored = JobFolder.merge(history: [], foundOnDisk: onDisk)
+    equal(restored.added, 2, "потерянная история восстанавливается по папкам")
+    check(restored.jobs.contains { $0.name == "Встреча А" && $0.stage == .done },
+          "стадия задачи восстановилась вместе с ней")
+
+    // Задача из истории главнее: она свежее той, что записана в папку.
+    var newer = jobA
+    newer.stage = .failed
+    newer.updatedAt = Date().addingTimeInterval(60)
+    let merged = JobFolder.merge(history: [newer], foundOnDisk: onDisk)
+    equal(merged.added, 1, "из папок добавляется только то, чего нет в истории")
+    check(merged.jobs.first { $0.id == jobA.id }?.stage == .failed,
+          "запись из истории не затирается старой записью из папки")
 }
 
 // MARK: - Итог

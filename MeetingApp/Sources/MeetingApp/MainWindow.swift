@@ -34,14 +34,26 @@ struct ContentView: View {
     private var jobs: [Job] {
         switch store.selectedSection {
         case .queue:
-            return JobStore.sortedForDisplay(store.jobs.filter { $0.stage != .done })
+            // Только что законченные задачи остаются в очереди ещё десять
+            // минут: иначе результат работы исчезает с экрана ровно в тот
+            // момент, когда человек его ждал, и это выглядит как потеря.
+            let recently = Date().addingTimeInterval(-600)
+            return JobStore.sortedForDisplay(store.jobs.filter {
+                $0.stage != .done || $0.updatedAt > recently
+            })
         case .history:
             return store.stageFilter == "meetings" ? store.meetingRecordingJobs : store.filteredJobs
         }
     }
 
     var body: some View {
-        NavigationSplitView {
+        // Панель разделов закреплена: раньше она сворачивалась сама, и вместе
+        // с ней исчезал единственный способ попасть в историю — выглядело
+        // так, будто пропали все задачи.
+        NavigationSplitView(columnVisibility: Binding(
+            get: { store.sidebarVisibility },
+            set: { store.sidebarVisibility = $0 == .detailOnly ? .all : $0 }
+        )) {
             List(selection: Binding<AppSection?>(
                 get: { store.selectedSection },
                 set: { store.selectedSection = $0 ?? .queue }
@@ -66,6 +78,7 @@ struct ContentView: View {
                 AddWorkView(store: store)
             }
         }
+        .navigationSplitViewStyle(.balanced)
         .navigationTitle(store.selectedSection.title)
         .navigationSubtitle(subtitle)
         .toolbar { toolbarContent }
@@ -113,6 +126,12 @@ struct ContentView: View {
     // действия, справа — поиск.
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
+        if store.isMeetingRecordingActive {
+            ToolbarItem(placement: .navigation) {
+                RecordingIndicatorView(store: store)
+            }
+        }
+
         ToolbarItemGroup(placement: .principal) {
             // Подписи рядом со значками: по одному значку непонятно, что
             // делает кнопка, а запись встречи — самое важное действие окна.
@@ -233,7 +252,7 @@ struct EmptyStateView: View {
 
     private var subtitle: String {
         switch section {
-        case .queue: return "Здесь появятся задачи, которые сейчас распознаются или ждут очереди."
+        case .queue: return "Здесь появятся задачи, которые сейчас распознаются или ждут очереди. Готовые остаются тут ещё десять минут, а дальше живут в истории."
         case .history: return store.searchText.isEmpty
             ? "Перетащите видео или аудио в окно, добавьте ссылку на YouTube или запишите встречу."
             : "Попробуйте другое слово или снимите фильтр."
@@ -300,5 +319,81 @@ struct SearchIfNeeded: ViewModifier {
         } else {
             content
         }
+    }
+}
+
+
+// MARK: - Индикатор записи
+
+// Пока идёт запись, в панели видно живую шкалу голоса и красную точку.
+// Бегущего таймера мало: по нему не понять, слышно ли микрофон и работает ли
+// запись вообще — а это единственное, что человек хочет знать в этот момент.
+struct RecordingIndicatorView: View {
+    @ObservedObject var store: JobStore
+    @ObservedObject private var recorder: AudioRecorder
+
+    init(store: JobStore) {
+        self.store = store
+        self.recorder = store.audioRecorder
+    }
+
+    private var elapsedText: String {
+        let seconds = store.meetingRecordingElapsedSeconds
+        return String(format: "%02d:%02d", seconds / 60, seconds % 60)
+    }
+
+    var body: some View {
+        // Мигание берём из TimelineView: @State без Xcode не работает —
+        // макрос property wrapper'а недоступен голым Command Line Tools.
+        TimelineView(.periodic(from: .now, by: 0.6)) { context in
+            let blink = Int(context.date.timeIntervalSinceReferenceDate / 0.6) % 2 == 0
+            indicator(blink: blink)
+        }
+    }
+
+    private func indicator(blink: Bool) -> some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(.red)
+                .frame(width: 8, height: 8)
+                .opacity(blink ? 1 : 0.35)
+
+            LevelMeterView(level: recorder.level)
+
+            Text(elapsedText)
+                .font(.callout.monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
+        .background(.red.opacity(0.12), in: Capsule())
+        .help("Идёт запись встречи. Полосы показывают уровень микрофона.")
+        .accessibilityLabel("Идёт запись встречи, \(elapsedText)")
+    }
+}
+
+// Пять полос, растущих от уровня сигнала: середина выше краёв, чтобы это
+// читалось как эквалайзер, а не как индикатор загрузки.
+struct LevelMeterView: View {
+    let level: Double
+
+    private let weights: [Double] = [0.55, 0.8, 1.0, 0.8, 0.55]
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 2) {
+            ForEach(weights.indices, id: \.self) { index in
+                Capsule()
+                    .fill(.red)
+                    .frame(width: 3, height: height(for: index))
+                    .animation(.easeOut(duration: 0.12), value: level)
+            }
+        }
+        .frame(height: 16)
+    }
+
+    private func height(for index: Int) -> Double {
+        let minimum = 3.0
+        let maximum = 16.0
+        return minimum + (maximum - minimum) * min(max(level, 0), 1) * weights[index]
     }
 }

@@ -44,6 +44,7 @@ struct AppCommands: Commands {
             Button("Показать лог") { LogWindowController.shared.show(store: store) }
                 .keyboardShortcut("l", modifiers: [.command, .shift])
             Divider()
+            Button("Пересобрать историю из папок") { store.rebuildHistoryFromFolders() }
             Button("Проверить компоненты") {
                 store.checkDependenciesAndPrompt()
                 store.refreshNotionAvailability()
