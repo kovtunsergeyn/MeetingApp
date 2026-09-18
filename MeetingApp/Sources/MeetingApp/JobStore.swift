@@ -1,8 +1,10 @@
 import Foundation
 import AppKit
+import SwiftUI
 import CoreAudio
 import CoreGraphics
 import ServiceManagement
+import UniformTypeIdentifiers
 import MeetingCore
 
 @MainActor
@@ -15,8 +17,11 @@ final class JobStore: ObservableObject {
     @Published var currentJobID: UUID?
 
     // Интерфейсное состояние (вместо @State — property wrapper-макросы не работают без Xcode).
-    @Published var selectedTab: Int = 0
+    @Published var selectedSection: AppSection = .queue
+    @Published var sidebarVisibility: NavigationSplitViewVisibility = .all
+    @Published var selectedJobID: UUID? = nil
     @Published var searchText: String = ""
+    @Published var isSearchVisible: Bool = false
     @Published var stageFilter: String = "all"
     @Published var showSettings: Bool = false
     @Published var showGlossarySheet: Bool = false
@@ -47,6 +52,7 @@ final class JobStore: ObservableObject {
 
 
     let audioRecorder = AudioRecorder()
+    let playback = AudioPlayback()
     let systemAudioRecorder = SystemAudioRecorder()
     private let meetingDetector = BrowserMeetingDetector()
     private let calendarDetector = CalendarMeetingDetector()
@@ -84,10 +90,12 @@ final class JobStore: ObservableObject {
         let cleanLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanDomain.isEmpty else { return }
         customMeetingDomains.append(CustomMeetingDomain(domain: cleanDomain, label: cleanLabel.isEmpty ? cleanDomain : cleanLabel))
+        appendLog("Добавлена платформа ВКС: \(cleanDomain). Всего своих платформ: \(customMeetingDomains.count).")
     }
 
     func removeCustomMeetingDomain(_ id: UUID) {
         customMeetingDomains.removeAll { $0.id == id }
+        appendLog("Удалена платформа ВКС. Осталось своих платформ: \(customMeetingDomains.count).")
     }
 
     private static func loadCustomMeetingDomains() -> [CustomMeetingDomain] {
@@ -159,12 +167,18 @@ final class JobStore: ObservableObject {
         detectedMeetingURL = url
         detectedMeetingPlatform = platform
         refreshMicrophoneList()
-        MeetingAlertPanelController.shared.show(
-            store: self,
-            platform: platform,
-            onStart: { [weak self] in self?.startMeetingRecording() },
-            onDismiss: { [weak self] in self?.dismissDetectedMeeting() }
-        )
+
+        // Системное уведомление — путь, который macOS предлагает для таких
+        // предложений. Своё плавающее окно остаётся запасным вариантом, если
+        // уведомления запрещены: иначе предложить запись было бы нечем.
+        if !MeetingNotifier.shared.notifyMeetingDetected(platform: platform) {
+            MeetingAlertPanelController.shared.show(
+                store: self,
+                platform: platform,
+                onStart: { [weak self] in self?.startMeetingRecording() },
+                onDismiss: { [weak self] in self?.dismissDetectedMeeting() }
+            )
+        }
     }
 
     func dismissDetectedMeeting() {
@@ -412,6 +426,7 @@ final class JobStore: ObservableObject {
 
     // Процесс текущей стадии — нужен, чтобы уметь ставить на паузу.
     private var currentProcess: Process?
+    private var runningProcesses: [Process] = []
     private var pauseRequested: Bool = false
     private var cancelRequested: Bool = false
 
@@ -422,14 +437,201 @@ final class JobStore: ObservableObject {
         migrateLegacyLayoutIfNeeded()
         createDirectories()
         loadHistory()
+        backfillMetaFiles()
+        adoptJobsFoundOnDisk()
+        adoptInterruptedRecordings()
         normalizeStagesOnLaunch()
         MeetingLinkDetector.customPatterns = customMeetingDomains.map { ($0.domain, $0.label) }
         startMeetingDetection()
         refreshNotionAvailability()
+        MeetingNotifier.shared.prepare(store: self)
+
+        // Свёрнутое в Dock окно нужно возвращать самому: щелчок по значку в
+        // Dock активирует приложение, но окно остаётся свёрнутым, и открыть
+        // его становится нечем — выглядит как зависшее приложение.
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            Task { @MainActor in
+                let hasVisibleWindow = NSApp.windows.contains {
+                    $0.isVisible && !$0.isMiniaturized && $0.canBecomeMain
+                }
+                guard !hasVisibleWindow else { return }
+                for window in NSApp.windows where window.isMiniaturized {
+                    window.deminiaturize(nil)
+                    window.makeKeyAndOrderFront(nil)
+                    break
+                }
+            }
+        }
+
+        // Скрипты, запущенные приложением, не должны оставаться работать после
+        // его закрытия: однажды выгрузка в Notion пережила приложение и висела
+        // ещё десять минут, а увидеть её было негде.
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.appendLog("Приложение закрывается.")
+                self?.terminateRunningScripts()
+            }
+        }
     }
 
     private func createDirectories() {
         layout.createDirectories()
+    }
+
+    // MARK: - Переименование встречи
+
+    @Published var renameJobID: UUID? = nil
+    @Published var renameText: String = ""
+
+    func startRename(jobID: UUID) {
+        guard let job = jobs.first(where: { $0.id == jobID }) else { return }
+        renameText = job.name
+        renameJobID = jobID
+    }
+
+    func confirmRename() {
+        guard let jobID = renameJobID, let index = jobs.firstIndex(where: { $0.id == jobID }) else { return }
+        let newName = JobRename.sanitized(renameText)
+        renameJobID = nil
+        guard !newName.isEmpty, newName != jobs[index].name else { return }
+
+        let oldName = jobs[index].name
+        let fm = FileManager.default
+
+        // Если транскрипт лежит в папке со старым названием — переносим папку,
+        // чтобы имя на диске не расходилось с именем в списке. Любая помеха —
+        // просто меняем название, файлы остаются на месте.
+        if let transcript = jobs[index].transcriptPath {
+            let folder = URL(fileURLWithPath: transcript).deletingLastPathComponent()
+            if folder.lastPathComponent == oldName {
+                let newFolder = folder.deletingLastPathComponent().appendingPathComponent(newName).path
+                if !fm.fileExists(atPath: newFolder),
+                   (try? fm.moveItem(atPath: folder.path, toPath: newFolder)) != nil {
+                    jobs[index].transcriptPath = JobRename.movedPath(transcript,
+                                                                    fromFolder: folder.path,
+                                                                    toFolder: newFolder)
+                } else {
+                    appendLog("Папку встречи переименовать не удалось — меняю только название.")
+                }
+            }
+        }
+
+        jobs[index].name = newName
+        jobs[index].updatedAt = Date()
+        saveHistory()
+        JobFolder.writeMeta(for: jobs[index])
+        appendLog("Встреча переименована: «\(oldName)» → «\(newName)».")
+    }
+
+    // MARK: - Подхват оборванных записей
+
+    // Если приложение убили посреди встречи, дорожки остались на диске, а
+    // задачи для них никто не создал. Находим такие папки при запуске и
+    // возвращаем встречу в обработку: несжатый звук переживает обрыв, терять
+    // его из-за упавшего приложения незачем.
+    private func adoptInterruptedRecordings() {
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(atPath: recordingsDir) else { return }
+
+        for entry in entries.sorted() {
+            let folder = recordingsDir + "/" + entry
+            var isDirectory: ObjCBool = false
+            guard fm.fileExists(atPath: folder, isDirectory: &isDirectory), isDirectory.boolValue else { continue }
+
+            // Папку, у которой уже есть задача, не трогаем.
+            let known = jobs.contains { job in
+                job.sourcePath.hasPrefix(folder + "/") || JobFolder.folder(for: job) == folder
+            }
+            if known { continue }
+
+            let systemTrack = folder + "/" + MeetingTracks.systemTrackName
+            let micTrack = folder + "/" + MeetingTracks.micTrackName
+            let mixed = folder + "/meeting.m4a"
+            guard fm.fileExists(atPath: systemTrack) || fm.fileExists(atPath: mixed) else { continue }
+
+            // Сводим то, что осталось, и ставим в очередь.
+            Task { await finishInterruptedRecording(folder: folder,
+                                                    name: entry,
+                                                    systemTrack: systemTrack,
+                                                    micTrack: micTrack,
+                                                    mixed: mixed) }
+        }
+    }
+
+    private func finishInterruptedRecording(folder: String, name: String,
+                                            systemTrack: String, micTrack: String,
+                                            mixed: String) async {
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: mixed), fm.fileExists(atPath: systemTrack) {
+            let result = await runScript(
+                name: "mix_meeting_audio.sh",
+                arguments: [systemTrack, fm.fileExists(atPath: micTrack) ? micTrack : "/dev/null", mixed],
+                jobID: nil
+            )
+            guard result.exitCode == 0 else {
+                appendLog("Не удалось восстановить прерванную запись «\(name)».")
+                return
+            }
+        }
+        guard fm.fileExists(atPath: mixed) else { return }
+
+        var job = Job(sourcePath: mixed)
+        job.name = name
+        job.isMeetingRecording = true
+        jobs.append(job)
+        appendLog("Найдена прерванная запись «\(name)» — вернул её в обработку.")
+        saveHistory()
+        JobFolder.writeMeta(for: job)
+        startNextIfIdle()
+    }
+
+    // MARK: - Восстановление задач по папкам
+
+    // История — только указатель. Если задача есть на диске, но пропала из
+    // истории, возвращаем её на место: файлы важнее списка.
+    // Для задач, сделанных до появления meta.json, запись рядом с файлами
+    // создаётся при первом запуске — иначе старые встречи остались бы
+    // незащищёнными от потери истории.
+    private func backfillMetaFiles() {
+        var written = 0
+        for job in jobs {
+            guard let folder = JobFolder.folder(for: job) else { continue }
+            guard !FileManager.default.fileExists(atPath: JobFolder.metaPath(inFolder: folder)) else { continue }
+            if JobFolder.writeMeta(for: job) { written += 1 }
+        }
+        if written > 0 {
+            appendLog("Записи о задачах разложены по их папкам: \(written).")
+        }
+    }
+
+    private func adoptJobsFoundOnDisk() {
+        let onDisk = JobFolder.scan(layout: layout)
+        guard !onDisk.isEmpty else { return }
+        let merged = JobFolder.merge(history: jobs, foundOnDisk: onDisk)
+        guard merged.added > 0 else { return }
+        jobs = merged.jobs
+        saveHistory()
+        appendLog("Восстановлено задач по папкам на диске: \(merged.added).")
+    }
+
+    // То же самое по требованию — пункт меню на случай, когда история
+    // пострадала, а файлы на месте.
+    func rebuildHistoryFromFolders() {
+        let onDisk = JobFolder.scan(layout: layout)
+        let merged = JobFolder.merge(history: jobs, foundOnDisk: onDisk)
+        jobs = merged.jobs
+        saveHistory()
+        appendLog(merged.added > 0
+                  ? "История пересобрана: добавлено задач — \(merged.added)."
+                  : "История пересобрана: всё, что есть на диске, уже было в списке.")
     }
 
     // MARK: - Переезд настроек со старого идентификатора
@@ -553,7 +755,35 @@ final class JobStore: ObservableObject {
 
     func appendLog(_ line: String) {
         let stamp = DateFormatter.logStamp.string(from: Date())
-        logText += "[" + stamp + "] " + line + "\n"
+        let entry = "[" + stamp + "] " + line + "\n"
+        logText += entry
+        writeToLogFile(entry)
+    }
+
+    // Лог живёт и в файле: окно с логом человек обычно открывает уже после
+    // того, как что-то пошло не так, а в памяти остаётся только текущий запуск.
+    private var logFileURL: URL { return URL(fileURLWithPath: baseDir + "/app.log") }
+
+    private func writeToLogFile(_ entry: String) {
+        guard let data = entry.data(using: .utf8) else { return }
+        let fm = FileManager.default
+        if let handle = try? FileHandle(forWritingTo: logFileURL) {
+            defer { try? handle.close() }
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: data)
+            // Чтобы файл не рос без предела, раз в запуск подрезаем его.
+            if let size = try? fm.attributesOfItem(atPath: logFileURL.path)[.size] as? Int, size > 2_000_000 {
+                trimLogFile()
+            }
+        } else {
+            try? data.write(to: logFileURL)
+        }
+    }
+
+    private func trimLogFile() {
+        guard let text = try? String(contentsOf: logFileURL, encoding: .utf8) else { return }
+        let tail = text.suffix(500_000)
+        try? String(tail).data(using: .utf8)?.write(to: logFileURL)
     }
 
     // MARK: - Прогресс текущего шага (замена развёрнутого лога по умолчанию)
@@ -754,24 +984,42 @@ final class JobStore: ObservableObject {
             process.terminate()
         }
 
+        removeMetaFile(for: job)
         cleanupTempFiles(for: job)
         jobs.removeAll { $0.id == jobID }
+        if selectedJobID == jobID { selectedJobID = nil }
         saveHistory()
         appendLog("Остановлено и очищено: \(job.name)")
     }
 
     private func cleanupTempFiles(for job: Job) {
         let fm = FileManager.default
-        let tmpDir = recordingsDir + "/" + job.name
-        try? fm.removeItem(atPath: tmpDir)
+        try? fm.removeItem(atPath: recordingsDir + "/" + job.name)
         if let transcriptPath = job.transcriptPath {
             try? fm.removeItem(atPath: URL(fileURLWithPath: transcriptPath).deletingLastPathComponent().path)
         }
+        // Сведённая запись лежит отдельно от текста: без этого после удаления
+        // задачи аудио оставалось на диске мусором.
+        if !job.sourcePath.isEmpty, job.sourcePath.hasPrefix(processedDir + "/") {
+            try? fm.removeItem(atPath: job.sourcePath)
+        }
     }
 
+    // Удаление из истории. Обязательно убирает и запись задачи в её папке:
+    // иначе восстановление по папкам при следующем запуске возвращало всё
+    // удалённое обратно — удаление выглядело неработающим.
     func removeJob(jobID: UUID) {
+        guard let job = jobs.first(where: { $0.id == jobID }) else { return }
+        removeMetaFile(for: job)
         jobs.removeAll { $0.id == jobID }
+        if selectedJobID == jobID { selectedJobID = nil }
         saveHistory()
+        appendLog("Удалено из истории: \(job.name)")
+    }
+
+    private func removeMetaFile(for job: Job) {
+        guard let folder = JobFolder.folder(for: job) else { return }
+        try? FileManager.default.removeItem(atPath: JobFolder.metaPath(inFolder: folder))
     }
 
     // MARK: - Зависимости
@@ -1112,7 +1360,9 @@ final class JobStore: ObservableObject {
                     $0.lastError = message
                     $0.lastErrorDetail = errorDetail(from: result.output)
                 }
+                selectedJobID = jobID
                 appendLog("\(message): \(job.fileName)")
+                MeetingNotifier.shared.notifyJobFinished(name: job.name, succeeded: false, detail: message)
                 return
             }
 
@@ -1166,11 +1416,17 @@ final class JobStore: ObservableObject {
                 $0.lastErrorDetail = errorDetail(from: result.output)
             }
             appendLog("Ошибка саммари: \(job.fileName). Транскрипт сохранён — можно продолжить позже.")
+            MeetingNotifier.shared.notifyJobFinished(name: job.name, succeeded: false,
+                                                     detail: "шаг саммари не прошёл")
             return
         }
 
         updateJob(jobID) { $0.stage = .done; $0.lastError = nil; $0.lastErrorDetail = nil }
-        appendLog("Саммари готово: \(job.fileName). Выгрузить его можно кнопками в истории.")
+        // Показываем результат сразу: иначе задача просто исчезает из очереди,
+        // и непонятно, куда делась работа.
+        selectedJobID = jobID
+        appendLog("Саммари готово: \(job.fileName). Выгрузить его можно кнопками в подробностях задачи.")
+        MeetingNotifier.shared.notifyJobFinished(name: job.name, succeeded: true, detail: nil)
 
         moveSourceToArchive(jobID: jobID)
     }
@@ -1213,6 +1469,54 @@ final class JobStore: ObservableObject {
                 appendLog("Не удалось изменить автозапуск: \(error.localizedDescription)")
             }
         }
+    }
+
+    // MARK: - Пути и предпросмотр
+
+    var dataFolderPath: String { return baseDir }
+
+    // Первые строки файла — чтобы в подробностях задачи было видно, что
+    // получилось, не открывая файл в другом приложении.
+    func transcriptPreview(for job: Job) -> String? {
+        guard let path = job.transcriptPath else { return nil }
+        return JobStore.previewText(atPath: path, limit: 1200)
+    }
+
+    func summaryPreview(for job: Job) -> String? {
+        guard let path = summaryPath(for: job) else { return nil }
+        return JobStore.previewText(atPath: path, limit: 1600)
+    }
+
+    private static func previewText(atPath path: String, limit: Int) -> String? {
+        guard let data = FileManager.default.contents(atPath: path),
+              let text = String(data: data, encoding: .utf8) else { return nil }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return trimmed.count > limit ? String(trimmed.prefix(limit)) + "…" : trimmed
+    }
+
+    // MARK: - Выбор файлов из меню и панели инструментов
+
+    func pickMediaFiles() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [.movie, .video, .audio, .mpeg4Movie, .quickTimeMovie]
+        NSApp.activate(ignoringOtherApps: true)
+        guard panel.runModal() == .OK else { return }
+        addFiles(panel.urls)
+        selectedSection = .queue
+    }
+
+    func pickTranscriptFile() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [.plainText]
+        NSApp.activate(ignoringOtherApps: true)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        addTranscriptFile(url)
+        selectedSection = .queue
     }
 
     // MARK: - Доступность выгрузки
@@ -1297,6 +1601,11 @@ final class JobStore: ObservableObject {
             let result = await runScript(name: "export_summary.sh", arguments: arguments, jobID: nil)
             exportingJobIDs.remove(jobID)
 
+            if result.exitCode == 4 {
+                appendLog("Выгрузка в Notion не уложилась в отведённое время и была прервана. Подробный вывод — в файле export.log рядом с саммари.")
+                return
+            }
+
             if result.exitCode == 0 {
                 if target == "notion", let link = extractNotionURL(from: result.output) {
                     updateJob(jobID) { $0.notionURL = link }
@@ -1317,26 +1626,83 @@ final class JobStore: ObservableObject {
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: summary)])
     }
 
+    // Файл записи встречи, если он ещё на диске: до архивации лежит в папке
+    // записи, после — в «processed» под именем встречи.
+    func audioPath(for job: Job) -> String? {
+        let fm = FileManager.default
+        guard !job.sourcePath.isEmpty, fm.fileExists(atPath: job.sourcePath) else { return nil }
+        let ext = URL(fileURLWithPath: job.sourcePath).pathExtension.lowercased()
+        guard MediaKind.allExtensions.contains(ext) else { return nil }
+        return job.sourcePath
+    }
+
+    func openTranscript(jobID: UUID) {
+        guard let job = jobs.first(where: { $0.id == jobID }), let path = job.transcriptPath,
+              FileManager.default.fileExists(atPath: path) else { return }
+        NSWorkspace.shared.open(URL(fileURLWithPath: path))
+    }
+
     func openSummary(jobID: UUID) {
         guard let job = jobs.first(where: { $0.id == jobID }), let summary = summaryPath(for: job) else { return }
         NSWorkspace.shared.open(URL(fileURLWithPath: summary))
     }
 
-    // Сохранить копию саммари в выбранное место.
+    // Сохраняет саммари и транскрипт одним архивом: по отдельности их потом
+    // приходится собирать руками, а вместе это готовый пакет по встрече.
     func saveSummaryCopy(jobID: UUID) {
-        guard let job = jobs.first(where: { $0.id == jobID }), let summary = summaryPath(for: job) else { return }
+        guard let job = jobs.first(where: { $0.id == jobID }) else { return }
+        let summary = summaryPath(for: job)
+        let transcript = job.transcriptPath.flatMap {
+            FileManager.default.fileExists(atPath: $0) ? $0 : nil
+        }
+        guard summary != nil || transcript != nil else {
+            appendLog("Сохранять нечего: ни саммари, ни транскрипта нет.")
+            return
+        }
+
         let panel = NSSavePanel()
-        panel.nameFieldStringValue = job.name + ".md"
-        panel.allowedContentTypes = []
+        panel.nameFieldStringValue = JobRename.sanitized(job.name) + ".zip"
+        NSApp.activate(ignoringOtherApps: true)
         guard panel.runModal() == .OK, let destination = panel.url else { return }
-        do {
-            if FileManager.default.fileExists(atPath: destination.path) {
-                try FileManager.default.removeItem(at: destination)
+
+        Task {
+            // Собираем во временной папке с понятными именами файлов внутри
+            // архива: «summary.md» и «transcript.txt» рядом с названием встречи.
+            let fm = FileManager.default
+            let staging = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try? fm.createDirectory(at: staging, withIntermediateDirectories: true)
+            defer { try? fm.removeItem(at: staging) }
+
+            if let summary {
+                try? fm.copyItem(atPath: summary, toPath: staging.appendingPathComponent("summary.md").path)
             }
-            try FileManager.default.copyItem(atPath: summary, toPath: destination.path)
-            appendLog("Саммари сохранено: \(destination.path)")
-        } catch {
-            appendLog("Не удалось сохранить саммари: \(error.localizedDescription)")
+            if let transcript {
+                try? fm.copyItem(atPath: transcript, toPath: staging.appendingPathComponent("transcript.txt").path)
+            }
+
+            if fm.fileExists(atPath: destination.path) {
+                try? fm.removeItem(at: destination)
+            }
+
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+            process.arguments = ["-j", "-q", destination.path,
+                                 staging.appendingPathComponent("summary.md").path,
+                                 staging.appendingPathComponent("transcript.txt").path]
+            process.standardError = Pipe()
+            do {
+                try process.run()
+                process.waitUntilExit()
+            } catch {
+                appendLog("Не удалось собрать архив: \(error.localizedDescription)")
+                return
+            }
+
+            if fm.fileExists(atPath: destination.path) {
+                appendLog("Саммари и транскрипт сохранены архивом: \(destination.path)")
+            } else {
+                appendLog("Архив не создан — проверь права на выбранную папку.")
+            }
         }
     }
 
@@ -1474,11 +1840,24 @@ final class JobStore: ObservableObject {
         return OutputParsing.downloadedTitle(in: output)
     }
 
+    // Скрипты — дети приложения, и переживать его они не должны: осиротевшая
+    // выгрузка в Notion однажды осталась работать ещё на десять минут после
+    // закрытия окна, и увидеть её можно было только в списке процессов.
+    private func terminateRunningScripts() {
+        for process in runningProcesses where process.isRunning {
+            process.terminate()
+        }
+        runningProcesses.removeAll()
+    }
+
     private func updateJob(_ jobID: UUID, _ change: (inout Job) -> Void) {
         guard let index = jobs.firstIndex(where: { $0.id == jobID }) else { return }
         change(&jobs[index])
         jobs[index].updatedAt = Date()
         saveHistory()
+        // Состояние задачи дублируется в её собственную папку: даже если общая
+        // история пострадает, по папкам её можно собрать заново.
+        JobFolder.writeMeta(for: jobs[index])
     }
 
     // MARK: - Запуск shell-скриптов
@@ -1536,6 +1915,7 @@ final class JobStore: ObservableObject {
         }
 
         currentProcess = process
+        runningProcesses.append(process)
 
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             process.terminationHandler = { _ in
@@ -1545,6 +1925,7 @@ final class JobStore: ObservableObject {
 
         pipe.fileHandleForReading.readabilityHandler = nil
         currentProcess = nil
+        runningProcesses.removeAll { $0 == process }
 
         return ScriptResult(exitCode: process.terminationStatus, output: collector.text)
     }
@@ -1603,10 +1984,8 @@ final class JobStore: ObservableObject {
         return JobStore.sortedForDisplay(jobs.filter { $0.isMeetingRecording })
     }
 
-    // Порядок в списках: просто по времени, свежее — выше. Статус на порядок
-    // не влияет: искать задачу глазами проще по времени, чем по стадии.
     static func sortedForDisplay(_ jobs: [Job]) -> [Job] {
-        return jobs.sorted { $0.updatedAt > $1.updatedAt }
+        return JobOrder.sortedForDisplay(jobs)
     }
 }
 

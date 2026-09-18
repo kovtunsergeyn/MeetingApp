@@ -85,19 +85,21 @@ group("Разбор вывода") {
 
 group("Дорожки записи встречи") {
     let dir = "/tmp/meeting"
-    let both: (String) -> Bool = { $0.hasSuffix("system.m4a") || $0.hasSuffix("mic.m4a") }
+    let both: (String) -> Bool = {
+        $0.hasSuffix(MeetingTracks.systemTrackName) || $0.hasSuffix(MeetingTracks.micTrackName)
+    }
 
     let separate = MeetingTracks.select(sourcePath: dir + "/meeting.m4a",
                                         isMeetingRecording: true,
                                         fileExists: both)
-    equal(separate.mainPath, dir + "/system.m4a", "собеседники — это системный звук")
-    equal(separate.micPath, dir + "/mic.m4a", "свой голос — это микрофон")
+    equal(separate.mainPath, dir + "/" + MeetingTracks.systemTrackName, "собеседники — это системный звук")
+    equal(separate.micPath, dir + "/" + MeetingTracks.micTrackName, "свой голос — это микрофон")
 
     // Одна дорожка без второй превратила бы разговор в монолог: распознаём
     // тогда сведённый файл целиком.
     let onlySystem = MeetingTracks.select(sourcePath: dir + "/meeting.m4a",
                                           isMeetingRecording: true,
-                                          fileExists: { $0.hasSuffix("system.m4a") })
+                                          fileExists: { $0.hasSuffix(MeetingTracks.systemTrackName) })
     equal(onlySystem.mainPath, dir + "/meeting.m4a", "без микрофона берём сведённый файл")
     check(onlySystem.micPath == nil, "без микрофона вторая дорожка не передаётся")
 
@@ -248,6 +250,28 @@ group("Чтение истории старых версий") {
     }
 }
 
+group("Удаление не воскресает из папки") {
+    let fm = FileManager.default
+    let home = NSTemporaryDirectory() + "delete-test-" + UUID().uuidString
+    defer { try? fm.removeItem(atPath: home) }
+
+    let layout = AppLayout(homeDirectory: home, folderName: "MeetingApp")
+    layout.createDirectories()
+
+    let folder = layout.transcriptsDir + "/Встреча"
+    try? fm.createDirectory(atPath: folder, withIntermediateDirectories: true)
+    var job = Job(sourcePath: layout.processedDir + "/x.m4a")
+    job.name = "Встреча"
+    job.transcriptPath = folder + "/transcript.txt"
+    JobFolder.writeMeta(for: job)
+    check(!JobFolder.scan(layout: layout).isEmpty, "задача видна на диске")
+
+    // Удаление обязано убрать запись задачи из папки: иначе восстановление по
+    // папкам вернёт её при следующем запуске, и удаление выглядит сломанным.
+    try? fm.removeItem(atPath: JobFolder.metaPath(inFolder: folder))
+    check(JobFolder.scan(layout: layout).isEmpty, "после удаления записи задача не находится")
+}
+
 group("Защита истории обработки") {
     // История — единственная запись о проделанной работе, и однажды она уже
     // обнулилась: приложение записало пустой список поверх четырёх задач.
@@ -259,6 +283,97 @@ group("Защита истории обработки") {
           "пустую историю можно записать, если файла ещё нет")
     check(HistorySafety.allowsWrite(newJobCount: 0, existingFileSize: 4),
           "пустую историю можно переписать поверх пустой")
+}
+
+group("Папка встречи как источник правды") {
+    let fm = FileManager.default
+    let home = NSTemporaryDirectory() + "folder-truth-" + UUID().uuidString
+    defer { try? fm.removeItem(atPath: home) }
+
+    let layout = AppLayout(homeDirectory: home, folderName: "MeetingApp")
+    layout.createDirectories()
+
+    // Две задачи: одна с транскриптом, другая только с исходником.
+    let folderA = layout.transcriptsDir + "/Встреча А"
+    try? fm.createDirectory(atPath: folderA, withIntermediateDirectories: true)
+    fm.createFile(atPath: folderA + "/transcript.txt", contents: Data("текст".utf8))
+    var jobA = Job(sourcePath: layout.processedDir + "/a.m4a")
+    jobA.name = "Встреча А"
+    jobA.transcriptPath = folderA + "/transcript.txt"
+    jobA.stage = .done
+    check(JobFolder.writeMeta(for: jobA), "запись о задаче сохранена рядом с транскриптом")
+
+    let folderB = layout.recordingsDir + "/Встреча Б"
+    try? fm.createDirectory(atPath: folderB, withIntermediateDirectories: true)
+    var jobB = Job(sourcePath: folderB + "/meeting.m4a")
+    jobB.name = "Встреча Б"
+    jobB.isMeetingRecording = true
+    check(JobFolder.writeMeta(for: jobB), "запись о задаче сохранена рядом с записью встречи")
+
+    let onDisk = JobFolder.scan(layout: layout)
+    equal(onDisk.count, 2, "обе задачи нашлись на диске")
+
+    // Главное свойство: история потеряна целиком, но собирается заново.
+    let restored = JobFolder.merge(history: [], foundOnDisk: onDisk)
+    equal(restored.added, 2, "потерянная история восстанавливается по папкам")
+    check(restored.jobs.contains { $0.name == "Встреча А" && $0.stage == .done },
+          "стадия задачи восстановилась вместе с ней")
+
+    // Задача из истории главнее: она свежее той, что записана в папку.
+    var newer = jobA
+    newer.stage = .failed
+    newer.updatedAt = Date().addingTimeInterval(60)
+    let merged = JobFolder.merge(history: [newer], foundOnDisk: onDisk)
+    equal(merged.added, 1, "из папок добавляется только то, чего нет в истории")
+    check(merged.jobs.first { $0.id == jobA.id }?.stage == .failed,
+          "запись из истории не затирается старой записью из папки")
+}
+
+group("Переименование встречи") {
+    equal(JobRename.sanitized("  Встреча с коллегой  "), "Встреча с коллегой",
+          "лишние пробелы убираются")
+    // В имя папки нельзя косую черту и двоеточие: иначе переименование
+    // разложило бы встречу по вложенным папкам или сломало путь.
+    equal(JobRename.sanitized("Отчёт 12:30 / черновик"), "Отчёт 12-30 - черновик",
+          "запрещённые символы заменяются")
+    check(JobRename.sanitized(String(repeating: "я", count: 300)).count <= 120,
+          "слишком длинное название обрезается")
+    check(JobRename.sanitized("   ").isEmpty, "пустое название остаётся пустым")
+
+    equal(JobRename.movedPath("/data/Старая/transcript.txt",
+                              fromFolder: "/data/Старая", toFolder: "/data/Новая"),
+          "/data/Новая/transcript.txt", "путь внутри переименованной папки обновляется")
+    equal(JobRename.movedPath("/other/file.txt",
+                              fromFolder: "/data/Старая", toFolder: "/data/Новая"),
+          "/other/file.txt", "чужой путь не трогается")
+}
+
+group("Порядок задач в списке") {
+    var older = Job(sourcePath: "/tmp/a.m4a")
+    older.name = "Ранняя"
+    older.createdAt = Date().addingTimeInterval(-3600)
+    older.updatedAt = Date()   // недавно переименовали
+
+    var newer = Job(sourcePath: "/tmp/b.m4a")
+    newer.name = "Поздняя"
+    newer.createdAt = Date().addingTimeInterval(-60)
+    newer.updatedAt = Date().addingTimeInterval(-60)
+
+    // Порядок держится по времени встречи: раньше сортировка шла по последнему
+    // изменению, и переименование старой записи выбрасывало её наверх.
+    let sorted = JobOrder.sortedForDisplay([older, newer])
+    equal(sorted.first?.name, "Поздняя", "свежая встреча выше")
+    equal(sorted.last?.name, "Ранняя", "переименование не поднимает старую встречу")
+}
+
+group("Время в проигрывателе") {
+    equal(TimeFormat.mmss(0), "00:00", "ноль")
+    equal(TimeFormat.mmss(65), "01:05", "минуты и секунды")
+    equal(TimeFormat.mmss(3599), "59:59", "почти час")
+    // Повреждённый файл может отдать бессмысленную длительность — на ней
+    // ползунок раньше ронял приложение.
+    equal(TimeFormat.mmss(.nan), "00:00", "нечисловая длительность")
+    equal(TimeFormat.mmss(-5), "00:00", "отрицательная длительность")
 }
 
 // MARK: - Итог

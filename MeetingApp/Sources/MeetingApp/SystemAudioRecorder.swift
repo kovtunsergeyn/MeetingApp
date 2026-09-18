@@ -61,14 +61,21 @@ final class SystemAudioRecorder: NSObject, ObservableObject, SCStreamDelegate {
             config.minimumFrameInterval = CMTime(value: 1, timescale: 1)
             config.showsCursor = false
 
+            // Пишем несжатый звук: если приложение убьют посреди встречи,
+            // сжатый файл окажется нечитаемым целиком, а из несжатого
+            // сохранится всё, что успело лечь на диск. Сжимаем потом, когда
+            // расшифровка уже готова.
             let url = FileManager.default.temporaryDirectory
-                .appendingPathComponent("system-audio-\(UUID().uuidString).m4a")
-            let writer = try AVAssetWriter(outputURL: url, fileType: .m4a)
+                .appendingPathComponent("system-audio-\(UUID().uuidString).caf")
+            let writer = try AVAssetWriter(outputURL: url, fileType: .caf)
             let settings: [String: Any] = [
-                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVFormatIDKey: kAudioFormatLinearPCM,
                 AVSampleRateKey: 48000,
                 AVNumberOfChannelsKey: 2,
-                AVEncoderBitRateKey: 128000
+                AVLinearPCMBitDepthKey: 16,
+                AVLinearPCMIsFloatKey: false,
+                AVLinearPCMIsBigEndianKey: false,
+                AVLinearPCMIsNonInterleaved: false
             ]
             let input = AVAssetWriterInput(mediaType: .audio, outputSettings: settings)
             input.expectsMediaDataInRealTime = true

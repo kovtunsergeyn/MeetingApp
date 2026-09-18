@@ -91,10 +91,14 @@ check "неизвестный компонент не ломает работу"
 
 if [ "$FULL" = "1" ]; then
   echo "• Распознавание двух дорожек (настоящий whisper)"
+  # Берём любую установленную модель, начиная с самых лёгких: раньше тест
+  # искал только base и medium и молча пропускался, когда на машине осталась
+  # одна large — то есть самая важная проверка не выполнялась вовсе.
   MODEL=""
-  for candidate in "$HOME/MeetingApp/models/ggml-base.bin" "$HOME/MeetingApp/models/ggml-medium.bin" \
-                   "$HOME/whisper-models/ggml-base.bin" "$HOME/whisper-models/ggml-medium.bin"; do
-    [ -f "$candidate" ] && MODEL="$candidate" && break
+  for dir in "$HOME/MeetingApp/models" "$HOME/MeetingApp-Test/models" "$HOME/whisper-models"; do
+    for name in ggml-tiny.bin ggml-base.bin ggml-small.bin ggml-medium.bin ggml-large-v3.bin; do
+      if [ -f "$dir/$name" ]; then MODEL="$dir/$name"; break 2; fi
+    done
   done
 
   if [ -z "$MODEL" ] || ! command -v whisper-cli >/dev/null 2>&1; then

@@ -88,8 +88,9 @@ public enum MeetingTracks {
         }
     }
 
-    public static let systemTrackName = "system.m4a"
-    public static let micTrackName = "mic.m4a"
+    // Дорожки лежат несжатыми: так обрыв записи не уносит встречу целиком.
+    public static let systemTrackName = "system.caf"
+    public static let micTrackName = "mic.wav"
 
     // Раздельные дорожки берём только у записей встреч и только если на месте
     // обе: одна дорожка без второй превратила бы разговор в монолог.
