@@ -445,6 +445,17 @@ final class JobStore: ObservableObject {
             legacyFolderName: JobStore.legacyDataFolderName,
             legacyModelsFolderName: JobStore.legacyModelsFolderName
         )
+        // Даже если переезд уже был раньше, в истории могли остаться старые
+        // пути — чиним их отдельно.
+        if LayoutMigration.repairLingeringLegacyPaths(
+            homeDirectory: NSHomeDirectory(),
+            layout: layout,
+            legacyFolderName: JobStore.legacyDataFolderName,
+            legacyModelsFolderName: JobStore.legacyModelsFolderName
+        ) {
+            appendLog("Пути в истории обновлены под новую папку данных.")
+        }
+
         guard report.didSomething else { return }
         appendLog("Данные переехали в одну папку: \(baseDir).")
 

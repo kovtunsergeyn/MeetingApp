@@ -118,6 +118,28 @@ public enum LayoutMigration {
         return report
     }
 
+    // Чинит пути, оставшиеся от старой раскладки, даже если сам переезд был
+    // раньше и уже не повторится: история — единственная запись о работе,
+    // и терять привязку к файлам из-за давней ошибки нельзя.
+    @discardableResult
+    public static func repairLingeringLegacyPaths(
+        homeDirectory: String,
+        layout: AppLayout,
+        legacyFolderName: String,
+        legacyModelsFolderName: String
+    ) -> Bool {
+        let legacyBase = homeDirectory + "/" + legacyFolderName
+        guard let data = FileManager.default.contents(atPath: layout.historyPath),
+              let text = String(data: data, encoding: .utf8) else { return false }
+        let escaped = legacyBase.replacingOccurrences(of: "/", with: "\\/")
+        guard text.contains(legacyBase) || text.contains(escaped) else { return false }
+        return rewriteHistoryPaths(
+            layout: layout,
+            legacyBase: legacyBase,
+            legacyModels: legacyModelsFolderName.isEmpty ? "" : homeDirectory + "/" + legacyModelsFolderName
+        )
+    }
+
     // В истории лежат абсолютные пути к исходникам и транскриптам: после
     // переезда их нужно переписать, иначе задачи «потеряют» свои файлы.
     @discardableResult
@@ -147,6 +169,13 @@ public enum LayoutMigration {
         let before = text
         for (old, new) in replacements {
             text = text.replacingOccurrences(of: old, with: new)
+            // JSON, который пишет JSONEncoder, экранирует косые черты:
+            // "\/Users\/sk\/…". Без этой замены пути в истории оставались
+            // старыми, и задачи «теряли» свои файлы после переезда.
+            text = text.replacingOccurrences(
+                of: old.replacingOccurrences(of: "/", with: "\\/"),
+                with: new.replacingOccurrences(of: "/", with: "\\/")
+            )
         }
         guard text != before else { return false }
         try? text.data(using: .utf8)?.write(to: URL(fileURLWithPath: layout.historyPath))

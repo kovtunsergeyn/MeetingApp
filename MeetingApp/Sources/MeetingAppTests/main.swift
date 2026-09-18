@@ -147,8 +147,12 @@ group("Переезд на единую папку") {
     try? fm.createDirectory(atPath: home + "/whisper-models", withIntermediateDirectories: true)
     fm.createFile(atPath: home + "/whisper-models/ggml-medium.bin", contents: Data("модель".utf8))
     fm.createFile(atPath: legacy + "/транскрипты/Встреча 1/transcript.txt", contents: Data("текст".utf8))
+    // Пути пишутся так же, как их пишет JSONEncoder приложения — с
+    // экранированными косыми чертами. На «красивой» фикстуре с обычными
+    // слешами тест проходил, а на настоящей истории замена не срабатывала.
+    let escapedLegacy = legacy.replacingOccurrences(of: "/", with: "\\/")
     let history = """
-    [{"sourcePath":"\(legacy)/tmp/Встреча 2/meeting.m4a","transcriptPath":"\(legacy)/транскрипты/Встреча 1/transcript.txt"}]
+    [{"sourcePath":"\(escapedLegacy)\\/tmp\\/Встреча 2\\/meeting.m4a","transcriptPath":"\(escapedLegacy)\\/транскрипты\\/Встреча 1\\/transcript.txt"}]
     """
     fm.createFile(atPath: legacy + "/history.json", contents: Data(history.utf8))
 
@@ -173,9 +177,10 @@ group("Переезд на единую папку") {
           "копия истории до переезда сохранена")
 
     let rewritten = String(data: fm.contents(atPath: layout.historyPath) ?? Data(), encoding: .utf8) ?? ""
-    check(rewritten.contains(layout.recordingsDir + "/Встреча 2/meeting.m4a"),
+    let escapedRecordings = layout.recordingsDir.replacingOccurrences(of: "/", with: "\\/")
+    check(rewritten.contains(escapedRecordings + "\\/Встреча 2\\/meeting.m4a"),
           "путь к записи переписан")
-    check(!rewritten.contains("/Встречи/"), "старых путей в истории не осталось")
+    check(!rewritten.contains("Встречи"), "старых путей в истории не осталось")
 
     // Повторный запуск не должен ничего трогать: история уже на новом месте.
     let again = LayoutMigration.run(homeDirectory: home, layout: layout,
