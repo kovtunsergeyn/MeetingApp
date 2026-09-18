@@ -150,6 +150,10 @@ $(for d in Resources/Localization/*.lproj; do echo "        <string>$(basename "
     <string>13.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <!-- Уведомление предлагает записать встречу — системный путь вместо
+         собственного плавающего окна. -->
+    <key>NSUserNotificationsUsageDescription</key>
+    <string>Нужно, чтобы предложить запись, когда начинается встреча.</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Нужно для записи голоса и последующей транскрибации.</string>
     <key>NSAppleEventsUsageDescription</key>

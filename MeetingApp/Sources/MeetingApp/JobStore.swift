@@ -3,6 +3,7 @@ import AppKit
 import CoreAudio
 import CoreGraphics
 import ServiceManagement
+import UniformTypeIdentifiers
 import MeetingCore
 
 @MainActor
@@ -15,7 +16,8 @@ final class JobStore: ObservableObject {
     @Published var currentJobID: UUID?
 
     // Интерфейсное состояние (вместо @State — property wrapper-макросы не работают без Xcode).
-    @Published var selectedTab: Int = 0
+    @Published var selectedSection: AppSection = .queue
+    @Published var selectedJobID: UUID? = nil
     @Published var searchText: String = ""
     @Published var stageFilter: String = "all"
     @Published var showSettings: Bool = false
@@ -159,12 +161,18 @@ final class JobStore: ObservableObject {
         detectedMeetingURL = url
         detectedMeetingPlatform = platform
         refreshMicrophoneList()
-        MeetingAlertPanelController.shared.show(
-            store: self,
-            platform: platform,
-            onStart: { [weak self] in self?.startMeetingRecording() },
-            onDismiss: { [weak self] in self?.dismissDetectedMeeting() }
-        )
+
+        // Системное уведомление — путь, который macOS предлагает для таких
+        // предложений. Своё плавающее окно остаётся запасным вариантом, если
+        // уведомления запрещены: иначе предложить запись было бы нечем.
+        if !MeetingNotifier.shared.notifyMeetingDetected(platform: platform) {
+            MeetingAlertPanelController.shared.show(
+                store: self,
+                platform: platform,
+                onStart: { [weak self] in self?.startMeetingRecording() },
+                onDismiss: { [weak self] in self?.dismissDetectedMeeting() }
+            )
+        }
     }
 
     func dismissDetectedMeeting() {
@@ -425,6 +433,7 @@ final class JobStore: ObservableObject {
         MeetingLinkDetector.customPatterns = customMeetingDomains.map { ($0.domain, $0.label) }
         startMeetingDetection()
         refreshNotionAvailability()
+        MeetingNotifier.shared.prepare(store: self)
     }
 
     private func createDirectories() {
@@ -1182,6 +1191,54 @@ final class JobStore: ObservableObject {
                 appendLog("Не удалось изменить автозапуск: \(error.localizedDescription)")
             }
         }
+    }
+
+    // MARK: - Пути и предпросмотр
+
+    var dataFolderPath: String { return baseDir }
+
+    // Первые строки файла — чтобы в подробностях задачи было видно, что
+    // получилось, не открывая файл в другом приложении.
+    func transcriptPreview(for job: Job) -> String? {
+        guard let path = job.transcriptPath else { return nil }
+        return JobStore.previewText(atPath: path, limit: 1200)
+    }
+
+    func summaryPreview(for job: Job) -> String? {
+        guard let path = summaryPath(for: job) else { return nil }
+        return JobStore.previewText(atPath: path, limit: 1600)
+    }
+
+    private static func previewText(atPath path: String, limit: Int) -> String? {
+        guard let data = FileManager.default.contents(atPath: path),
+              let text = String(data: data, encoding: .utf8) else { return nil }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return trimmed.count > limit ? String(trimmed.prefix(limit)) + "…" : trimmed
+    }
+
+    // MARK: - Выбор файлов из меню и панели инструментов
+
+    func pickMediaFiles() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [.movie, .video, .audio, .mpeg4Movie, .quickTimeMovie]
+        NSApp.activate(ignoringOtherApps: true)
+        guard panel.runModal() == .OK else { return }
+        addFiles(panel.urls)
+        selectedSection = .queue
+    }
+
+    func pickTranscriptFile() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [.plainText]
+        NSApp.activate(ignoringOtherApps: true)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        addTranscriptFile(url)
+        selectedSection = .queue
     }
 
     // MARK: - Доступность выгрузки

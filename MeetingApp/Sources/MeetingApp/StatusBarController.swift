@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
+import CoreAudio
 import MeetingCore
 
 // Значок в строке меню (справа вверху, рядом с часами) с быстрыми действиями:
@@ -54,6 +55,11 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         }
 
         menu.addItem(.separator())
+        // Микрофон выбирается прямо отсюда: во время встречи это быстрее, чем
+        // искать настройку в окне приложения.
+        menu.addItem(microphoneMenuItem())
+
+        menu.addItem(.separator())
         menu.addItem(actionItem("Добавить видео или аудио…", #selector(addMedia), "film"))
         menu.addItem(actionItem("Добавить готовый транскрипт…", #selector(addTranscript), "doc.text"))
 
@@ -82,6 +88,34 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         item.target = self
         item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
         return item
+    }
+
+    private func microphoneMenuItem() -> NSMenuItem {
+        guard let store else { return disabledItem("Микрофон") }
+        store.refreshMicrophoneList()
+
+        let item = NSMenuItem(title: NSLocalizedString("Микрофон", comment: ""), action: nil, keyEquivalent: "")
+        item.image = NSImage(systemSymbolName: "mic", accessibilityDescription: nil)
+
+        let submenu = NSMenu()
+        let currentID = store.selectedMicrophoneDeviceID ?? AudioDevices.defaultInputDeviceID()
+        for device in store.availableMicrophones {
+            let deviceItem = NSMenuItem(title: device.name, action: #selector(selectMicrophone(_:)), keyEquivalent: "")
+            deviceItem.target = self
+            deviceItem.representedObject = device.id
+            deviceItem.state = device.id == currentID ? .on : .off
+            submenu.addItem(deviceItem)
+        }
+        if store.availableMicrophones.isEmpty {
+            submenu.addItem(disabledItem("Микрофонов не найдено"))
+        }
+        item.submenu = submenu
+        return item
+    }
+
+    @objc private func selectMicrophone(_ sender: NSMenuItem) {
+        guard let store, let deviceID = sender.representedObject as? AudioDeviceID else { return }
+        store.selectedMicrophoneDeviceID = deviceID == AudioDevices.defaultInputDeviceID() ? nil : deviceID
     }
 
     private func disabledItem(_ title: String) -> NSMenuItem {
@@ -136,10 +170,11 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         }
     }
 
+    // Системную сцену настроек открывает стандартное действие — то же самое,
+    // что пункт «Настройки…» в меню приложения и ⌘,.
     @objc private func openSettings() {
-        guard let store else { return }
-        store.showSettings = true
-        SettingsWindowController.shared.show(store: store)
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
     }
 
     @objc private func quitApp() {
