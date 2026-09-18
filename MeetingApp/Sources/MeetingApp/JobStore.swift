@@ -424,6 +424,7 @@ final class JobStore: ObservableObject {
         normalizeStagesOnLaunch()
         MeetingLinkDetector.customPatterns = customMeetingDomains.map { ($0.domain, $0.label) }
         startMeetingDetection()
+        refreshNotionAvailability()
     }
 
     private func createDirectories() {
@@ -1089,7 +1090,7 @@ final class JobStore: ObservableObject {
         updateJob(jobID) { $0.stage = .summarizing; $0.lastError = nil; $0.lastErrorDetail = nil }
         appendLog("── Саммари: \(job.fileName)")
 
-        startStageTimer(estimatedSeconds: nil)
+        startStageTimer(estimatedSeconds: estimatedSummarySeconds(transcriptPath: transcriptPath))
         let result = await runScript(
             name: "summarize.sh",
             arguments: [transcriptPath, job.name, glossary],
@@ -1120,6 +1121,18 @@ final class JobStore: ObservableObject {
         moveSourceToArchive(jobID: jobID)
     }
 
+    // Сколько примерно займёт сбор саммари. Точного прогресса у этого шага нет:
+    // Claude не сообщает, сколько ему осталось. Но время почти линейно зависит
+    // от длины транскрипта, поэтому прикидка по его размеру даёт человеку
+    // понятную полосу вместо бесконечного кручения. Коэффициенты подобраны по
+    // реальным прогонам: короткая встреча — около полутора минут, часовая — до пяти.
+    private func estimatedSummarySeconds(transcriptPath: String) -> Double {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: transcriptPath)
+        let bytes = (attributes?[.size] as? Int) ?? 0
+        let kilobytes = Double(bytes) / 1024
+        return max(45 + kilobytes * 5, 60)
+    }
+
     // Полный вывод шага для показа в развёрнутых подробностях ошибки.
     // Обрезаем середину длинного лога — начало и конец обычно самые информативные.
     private func errorDetail(from output: String) -> String? {
@@ -1145,6 +1158,51 @@ final class JobStore: ObservableObject {
             } catch {
                 appendLog("Не удалось изменить автозапуск: \(error.localizedDescription)")
             }
+        }
+    }
+
+    // MARK: - Доступность выгрузки
+
+    // Кнопка выгрузки в Notion включается, только если Notion действительно
+    // подключён к Claude Code: иначе нажатие заканчивалось бы невнятной
+    // ошибкой в логе через полминуты.
+    @Published var isNotionConnected: Bool = false
+    @Published var isCheckingNotion: Bool = false
+
+    func refreshNotionAvailability() {
+        guard !isCheckingNotion else { return }
+        isCheckingNotion = true
+        Task.detached { [weak self] in
+            let connected = JobStore.detectNotionConnection()
+            await MainActor.run {
+                self?.isNotionConnected = connected
+                self?.isCheckingNotion = false
+            }
+        }
+    }
+
+    // Спрашиваем сам claude: список подключённых MCP-серверов и их состояние.
+    nonisolated private static func detectNotionConnection() -> Bool {
+        let candidates = ["/opt/homebrew/bin/claude", "/usr/local/bin/claude",
+                          NSHomeDirectory() + "/.npm-global/bin/claude"]
+        guard let path = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
+            return false
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: path)
+        process.arguments = ["mcp", "list"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+        do { try process.run() } catch { return false }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        let output = String(data: data, encoding: .utf8) ?? ""
+        return output.components(separatedBy: .newlines).contains { line in
+            let lower = line.lowercased()
+            // Строка вида «claude.ai Notion: https://… - ✔ Connected»
+            return lower.contains("notion") && !lower.contains("needs authentication")
+                && (line.contains("✔") || lower.contains("connected"))
         }
     }
 
@@ -1484,11 +1542,17 @@ final class JobStore: ObservableObject {
             result = result.filter { $0.name.lowercased().contains(query) }
         }
 
-        return result.sorted { $0.updatedAt > $1.updatedAt }
+        return JobStore.sortedForDisplay(result)
     }
 
     var meetingRecordingJobs: [Job] {
-        return jobs.filter { $0.isMeetingRecording }.sorted { $0.createdAt > $1.createdAt }
+        return JobStore.sortedForDisplay(jobs.filter { $0.isMeetingRecording })
+    }
+
+    // Порядок в списках: просто по времени, свежее — выше. Статус на порядок
+    // не влияет: искать задачу глазами проще по времени, чем по стадии.
+    static func sortedForDisplay(_ jobs: [Job]) -> [Job] {
+        return jobs.sorted { $0.updatedAt > $1.updatedAt }
     }
 }
 

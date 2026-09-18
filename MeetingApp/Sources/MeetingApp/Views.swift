@@ -110,7 +110,18 @@ struct MicrophoneRecorderView: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            if recorder.isRecording {
+            // Диктовка и запись встречи используют один и тот же микрофон, и
+            // раньше блок диктовки показывал таймер идущей встречи, хотя к ней
+            // отношения не имеет. Во время записи встречи блок просто выключен.
+            if store.isMeetingRecordingActive {
+                Button {
+                } label: {
+                    Label("Наговорить текст с микрофона", systemImage: "mic.fill")
+                }
+                .disabled(true)
+                .help("Сейчас идёт запись встречи — микрофон занят")
+                Spacer()
+            } else if recorder.isRecording {
                 Circle().fill(Color.red).frame(width: 8, height: 8)
                 Text("Идёт запись… \(timeText)")
                     .font(.callout)
@@ -296,7 +307,8 @@ struct JobRowView: View {
             }
 
             // Куда отправить готовое саммари — решает человек, поэтому это
-            // кнопки, а не шаг обработки.
+            // отдельные кнопки. Неактивная кнопка сразу показывает, что
+            // действие недоступно, вместо ошибки после нажатия.
             if store.hasSummary(job) {
                 Button {
                     store.openSummary(jobID: job.id)
@@ -305,31 +317,27 @@ struct JobRowView: View {
                 }
                 .help("Открыть саммари")
 
-                Menu {
-                    Button("Открыть саммари") { store.openSummary(jobID: job.id) }
-                    Button("Показать в Finder") { store.revealSummary(jobID: job.id) }
-                    Button("Сохранить копию…") { store.saveSummaryCopy(jobID: job.id) }
-                    Divider()
-                    Button(job.notionURL == nil ? "Выгрузить в Notion" : "Выгрузить в Notion ещё раз") {
-                        store.exportSummary(jobID: job.id, to: "notion")
-                    }
-                    Button(job.savedToNotes ? "Сохранить в Заметки ещё раз" : "Сохранить в Заметки") {
-                        store.exportSummary(jobID: job.id, to: "notes")
-                    }
-                    if let link = job.notionURL {
-                        Divider()
-                        Button("Открыть страницу в Notion") { store.openURL(link) }
-                    }
+                Button {
+                    store.exportSummary(jobID: job.id, to: "notion")
                 } label: {
                     if store.exportingJobIDs.contains(job.id) {
                         ProgressView().controlSize(.mini)
                     } else {
-                        Image(systemName: "square.and.arrow.up")
+                        Label("В Notion", systemImage: "arrow.up.doc")
                     }
                 }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-                .help("Выгрузить саммари: Notion, Заметки или файл")
+                .disabled(!store.isNotionConnected || store.exportingJobIDs.contains(job.id))
+                .help(store.isNotionConnected
+                      ? (job.notionURL == nil ? "Выгрузить саммари в Notion" : "Выгрузить в Notion ещё раз")
+                      : "Notion не подключён к Claude Code — подключи его в настройках Claude")
+
+                Button {
+                    store.exportSummary(jobID: job.id, to: "notes")
+                } label: {
+                    Label("В Заметки", systemImage: "note.text")
+                }
+                .disabled(store.exportingJobIDs.contains(job.id))
+                .help(job.savedToNotes ? "Сохранить в Заметки ещё раз" : "Сохранить саммари в Заметки")
             }
 
             if let link = job.notionURL {
@@ -373,6 +381,14 @@ struct AttachTranscriptView: View {
 struct StageProgressView: View {
     @ObservedObject var store: JobStore
 
+    // Название текущего шага: полоса одна и та же на распознавании, загрузке и
+    // саммари, и без подписи непонятно, чего ждать.
+    private var stageTitle: String? {
+        guard let id = store.currentJobID,
+              let job = store.jobs.first(where: { $0.id == id }) else { return nil }
+        return job.stage.isRunning ? job.stage.title : nil
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             if let fraction = store.stageProgressFraction {
@@ -380,9 +396,19 @@ struct StageProgressView: View {
             } else {
                 ProgressView()
             }
-            Text(store.stageStatusText)
-                .font(.caption)
-                .foregroundColor(.secondary)
+            HStack(spacing: 6) {
+                if let stageTitle {
+                    Text(stageTitle)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Text("·")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                Text(store.stageStatusText)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
         }
     }
 }
@@ -393,7 +419,7 @@ struct QueueTabView: View {
     @ObservedObject var store: JobStore
 
     private var activeJobs: [Job] {
-        return store.jobs.filter { $0.stage != .done }.sorted { $0.createdAt < $1.createdAt }
+        return JobStore.sortedForDisplay(store.jobs.filter { $0.stage != .done })
     }
 
     private var elapsedText: String {
@@ -411,14 +437,21 @@ struct QueueTabView: View {
                 meetingRecordingBlock
             }
 
-            SectionBox(title: "Добавить файл или ссылку", systemImage: "tray.and.arrow.down") {
+            SectionBox(title: "Файл или ссылка", systemImage: "tray.and.arrow.down") {
                 VStack(alignment: .leading, spacing: 10) {
                     DropZoneView(store: store)
                     YouTubeInputView(store: store)
-                    HStack(spacing: 10) {
-                        MicrophoneRecorderView(store: store)
-                        AttachTranscriptView(store: store)
-                    }
+                }
+            }
+
+            // Диктовка и готовый транскрипт — разные способы начать работу,
+            // поэтому у каждого свой блок. Рядом, чтобы не растягивать вкладку.
+            HStack(alignment: .top, spacing: 12) {
+                SectionBox(title: "Наговорить текст", systemImage: "mic.fill") {
+                    MicrophoneRecorderView(store: store)
+                }
+                SectionBox(title: "Готовый транскрипт", systemImage: "doc.text") {
+                    AttachTranscriptView(store: store)
                 }
             }
 
@@ -583,6 +616,11 @@ struct HistoryTabView: View {
                 List(visibleJobs) { job in
                     JobRowView(store: store, job: job)
                         .contextMenu {
+                            if store.hasSummary(job) {
+                                Button("Показать саммари в Finder") { store.revealSummary(jobID: job.id) }
+                                Button("Сохранить копию саммари…") { store.saveSummaryCopy(jobID: job.id) }
+                                Divider()
+                            }
                             Button("Удалить из истории") {
                                 store.removeJob(jobID: job.id)
                             }
@@ -979,6 +1017,7 @@ struct SettingsSheet: View {
             HStack {
                 Button {
                     store.checkDependenciesAndPrompt()
+                    store.refreshNotionAvailability()
                 } label: {
                     Label("Проверить компоненты", systemImage: "checkmark.seal")
                 }
