@@ -146,3 +146,23 @@ public enum TimeFormat {
         return String(format: "%02d:%02d", total / 60, total % 60)
     }
 }
+
+// MARK: - Прерванные записи
+
+// Приложение может умереть посреди встречи, и тогда дорожки остаются на диске
+// без задачи. Такие папки нужно возвращать в обработку — но только их.
+//
+// Однажды эта проверка была слишком широкой: после обработки запись уезжает в
+// processed, а папка записи остаётся, и вчерашние обработанные встречи были
+// приняты за прерванные и отправлены распознаваться заново, на большой модели.
+public enum InterruptedRecording {
+    public static func shouldAdopt(folderName: String, layout: AppLayout, knownNames: [String]) -> Bool {
+        // Задача с таким названием уже есть в истории.
+        if knownNames.contains(folderName) { return false }
+        // Для этой встречи уже есть готовый транскрипт — работа сделана.
+        if FileManager.default.fileExists(
+            atPath: layout.transcriptsDir + "/" + folderName + "/transcript.txt"
+        ) { return false }
+        return true
+    }
+}

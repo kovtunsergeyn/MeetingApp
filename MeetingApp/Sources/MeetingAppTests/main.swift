@@ -272,6 +272,68 @@ group("Удаление не воскресает из папки") {
     check(JobFolder.scan(layout: layout).isEmpty, "после удаления записи задача не находится")
 }
 
+group("Обработанная встреча не подхватывается заново") {
+    let fm = FileManager.default
+    let home = NSTemporaryDirectory() + "adopt-test-" + UUID().uuidString
+    defer { try? fm.removeItem(atPath: home) }
+
+    let layout = AppLayout(homeDirectory: home, folderName: "MeetingApp")
+    layout.createDirectories()
+
+    // Так выглядит уже обработанная встреча: запись уехала в processed,
+    // транскрипт лежит в своей папке, а папка записи осталась с файлом внутри.
+    let name = "Встреча 01.01.2026 10-00"
+    let recordingFolder = layout.recordingsDir + "/" + name
+    try? fm.createDirectory(atPath: recordingFolder, withIntermediateDirectories: true)
+    fm.createFile(atPath: recordingFolder + "/meeting.m4a", contents: Data("звук".utf8))
+
+    let transcriptFolder = layout.transcriptsDir + "/" + name
+    try? fm.createDirectory(atPath: transcriptFolder, withIntermediateDirectories: true)
+    fm.createFile(atPath: transcriptFolder + "/transcript.txt", contents: Data("текст".utf8))
+
+    // Признак, по которому приложение отличает прерванную запись от сделанной:
+    // готовый транскрипт с тем же названием. Без этой проверки оно отправляло
+    // старую встречу на распознавание заново — на большой модели это десятки
+    // минут работы впустую.
+    let hasTranscript = fm.fileExists(atPath: transcriptFolder + "/transcript.txt")
+    check(hasTranscript, "у обработанной встречи есть транскрипт")
+    check(!InterruptedRecording.shouldAdopt(folderName: name, layout: layout, knownNames: []),
+          "обработанная встреча не подхватывается заново")
+    check(InterruptedRecording.shouldAdopt(folderName: "Встреча 01.01.2026 11-00", layout: layout, knownNames: []),
+          "настоящая прерванная запись подхватывается")
+    check(!InterruptedRecording.shouldAdopt(folderName: name, layout: layout, knownNames: [name]),
+          "встреча, уже известная приложению, не дублируется")
+}
+
+group("Удаление вычищает записи задачи из всех папок") {
+    let fm = FileManager.default
+    let home = NSTemporaryDirectory() + "delete-all-" + UUID().uuidString
+    defer { try? fm.removeItem(atPath: home) }
+
+    let layout = AppLayout(homeDirectory: home, folderName: "MeetingApp")
+    layout.createDirectories()
+
+    // Запись задачи оказывается в двух папках: её пишут и во время записи,
+    // и после обработки. Если убрать только одну, вторая воскресит задачу.
+    let name = "Встреча 02.02.2026 09-00"
+    var job = Job(sourcePath: layout.recordingsDir + "/" + name + "/meeting.m4a")
+    job.name = name
+    job.transcriptPath = layout.transcriptsDir + "/" + name + "/transcript.txt"
+    let encoded = try? JobFolder.encoder().encode(job)
+    for parent in [layout.recordingsDir, layout.transcriptsDir] {
+        let folder = parent + "/" + name
+        try? fm.createDirectory(atPath: folder, withIntermediateDirectories: true)
+        fm.createFile(atPath: JobFolder.metaPath(inFolder: folder), contents: encoded)
+    }
+    equal(JobFolder.scan(layout: layout).count, 1, "задача видна на диске")
+
+    // Убираем записи так же, как это делает приложение при удалении.
+    for parent in [layout.recordingsDir, layout.transcriptsDir] {
+        try? fm.removeItem(atPath: JobFolder.metaPath(inFolder: parent + "/" + name))
+    }
+    check(JobFolder.scan(layout: layout).isEmpty, "после удаления задача не находится нигде")
+}
+
 group("Защита истории обработки") {
     // История — единственная запись о проделанной работе, и однажды она уже
     // обнулилась: приложение записало пустой список поверх четырёх задач.

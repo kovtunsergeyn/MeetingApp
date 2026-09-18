@@ -19,6 +19,12 @@ final class JobStore: ObservableObject {
     // Интерфейсное состояние (вместо @State — property wrapper-макросы не работают без Xcode).
     @Published var selectedSection: AppSection = .queue
     @Published var sidebarVisibility: NavigationSplitViewVisibility = .all
+
+    // Счётчик перерисовки. Первый кадр окна иногда выходит пустым: колонка
+    // разделов есть, а её содержимого нет, и появляется оно только после
+    // какого-нибудь действия. Одна принудительная перерисовка сразу после
+    // запуска снимает это.
+    @Published var uiRefreshTick: Int = 0
     @Published var selectedJobID: UUID? = nil
     @Published var searchText: String = ""
     @Published var isSearchVisible: Bool = false
@@ -546,11 +552,17 @@ final class JobStore: ObservableObject {
             var isDirectory: ObjCBool = false
             guard fm.fileExists(atPath: folder, isDirectory: &isDirectory), isDirectory.boolValue else { continue }
 
-            // Папку, у которой уже есть задача, не трогаем.
+            // Папку, у которой уже есть задача, не трогаем. Сверяем и по имени:
+            // после обработки запись уезжает в processed, а папка остаётся, и
+            // без проверки по имени старая обработанная встреча принималась за
+            // прерванную и распознавалась заново.
             let known = jobs.contains { job in
                 job.sourcePath.hasPrefix(folder + "/") || JobFolder.folder(for: job) == folder
             }
             if known { continue }
+            guard InterruptedRecording.shouldAdopt(folderName: entry,
+                                                   layout: layout,
+                                                   knownNames: jobs.map { $0.name }) else { continue }
 
             let systemTrack = folder + "/" + MeetingTracks.systemTrackName
             let micTrack = folder + "/" + MeetingTracks.micTrackName
@@ -1017,9 +1029,24 @@ final class JobStore: ObservableObject {
         appendLog("Удалено из истории: \(job.name)")
     }
 
+    // Запись задачи может лежать в нескольких папках сразу: её пишут во время
+    // записи встречи и после обработки, а переименование оставляет папку со
+    // старым названием. Поэтому ищем по идентификатору задачи, а не по имени:
+    // иначе забытая запись воскрешала удалённую встречу при следующем запуске.
     private func removeMetaFile(for job: Job) {
-        guard let folder = JobFolder.folder(for: job) else { return }
-        try? FileManager.default.removeItem(atPath: JobFolder.metaPath(inFolder: folder))
+        let fm = FileManager.default
+        for parent in [recordingsDir, transcriptsDir, processedDir] {
+            guard let entries = try? fm.contentsOfDirectory(atPath: parent) else { continue }
+            for entry in entries {
+                let folder = parent + "/" + entry
+                guard let found = JobFolder.readMeta(inFolder: folder), found.id == job.id else { continue }
+                try? fm.removeItem(atPath: JobFolder.metaPath(inFolder: folder))
+                // Пустая папка после этого никому не нужна.
+                if let left = try? fm.contentsOfDirectory(atPath: folder), left.isEmpty {
+                    try? fm.removeItem(atPath: folder)
+                }
+            }
+        }
     }
 
     // MARK: - Зависимости

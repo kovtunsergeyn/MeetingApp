@@ -65,12 +65,13 @@ struct ContentView: View {
     }
 
     var body: some View {
-        // Панель разделов закреплена: раньше она сворачивалась сама, и вместе
-        // с ней исчезал единственный способ попасть в историю — выглядело
-        // так, будто пропали все задачи.
+        // Состояние панели разделов передаём как есть. Раньше здесь стояла
+        // «фиксация»: любую попытку свернуть панель мы подменяли на «показать».
+        // Система при этом считала панель свёрнутой, а мы — раскрытой, и вместо
+        // разделов оставалась пустая полоса, из которой не было выхода.
         NavigationSplitView(columnVisibility: Binding(
             get: { store.sidebarVisibility },
-            set: { store.sidebarVisibility = $0 == .detailOnly ? .all : $0 }
+            set: { store.sidebarVisibility = $0 }
         )) {
             List(selection: Binding<AppSection?>(
                 get: { store.selectedSection },
@@ -84,10 +85,10 @@ struct ContentView: View {
                     }
                 }
             }
-            .navigationSplitViewColumnWidth(min: 170, ideal: 190, max: 260)
+            .navigationSplitViewColumnWidth(min: 150, ideal: 190, max: 260)
         } content: {
             JobListView(store: store, jobs: jobs)
-                .navigationSplitViewColumnWidth(min: 260, ideal: 320)
+                .navigationSplitViewColumnWidth(min: 230, ideal: 320)
         } detail: {
             if let selected = store.selectedJobID,
                let job = store.jobs.first(where: { $0.id == selected }) {
@@ -97,10 +98,19 @@ struct ContentView: View {
             }
         }
         .navigationSplitViewStyle(.balanced)
+        .id(store.uiRefreshTick)
         .navigationTitle(store.selectedSection.title)
         .navigationSubtitle(subtitle)
         .toolbar { toolbarContent }
-        .onAppear { StatusBarController.shared.install(store: store) }
+        .onAppear {
+            // При запуске панель разделов всегда раскрыта: без неё не попасть
+            // в историю, и окно выглядит пустым.
+            store.sidebarVisibility = .all
+            StatusBarController.shared.install(store: store)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                store.uiRefreshTick += 1
+            }
+        }
         .sheet(isPresented: Binding(
             get: { store.showDependencySheet },
             set: { store.showDependencySheet = $0 }
@@ -334,6 +344,11 @@ struct EmptyStateView: View {
         case .history: return store.searchText.isEmpty ? "Пока ничего не обработано" : "Ничего не найдено"
         }
     }
+
+    // Окно могло остаться узким от прежней версии приложения: при ширине меньше
+    // тысячи точек боковая панель схлопывается в пустую полосу, и разделы
+
+    // Временная диагностика: по снимкам экрана не удаётся понять, почему в
 
     private var subtitle: String {
         if isFiltered {
