@@ -64,6 +64,21 @@ final class MeetingNotifier: NSObject, UNUserNotificationCenterDelegate {
         return true
     }
 
+    // Обработка идёт минутами, и человек за это время уходит в другое окно.
+    // Уведомление говорит, что всё готово, даже если приложение свёрнуто.
+    func notifyJobFinished(name: String, succeeded: Bool, detail: String?) {
+        guard isAuthorized else { return }
+
+        let content = UNMutableNotificationContent()
+        content.title = succeeded ? "Саммари готово" : "Обработка не удалась"
+        content.body = succeeded ? name : (detail.map { "\(name): \($0)" } ?? name)
+        content.sound = succeeded ? .default : .defaultCritical
+
+        UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        )
+    }
+
     // MARK: - Ответ на уведомление
 
     nonisolated func userNotificationCenter(

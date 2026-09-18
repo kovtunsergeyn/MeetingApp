@@ -141,7 +141,7 @@ struct IntegrationsSettingsPane: View {
                 TextField("База для саммари:", text: Binding(
                     get: { store.notionDatabaseName },
                     set: { store.notionDatabaseName = $0 }
-                ))
+                ), prompt: Text("Саммари встреч"))
                 LabeledContent("Состояние:") {
                     HStack(spacing: 6) {
                         if store.isCheckingNotion {
@@ -207,17 +207,22 @@ struct MeetingsSettingsPane: View {
                     }
                 }
 
+                // В форме первая строка TextField становится подписью слева, а не
+                // подсказкой внутри поля: длинный текст занимал всю строку, и
+                // вводить было некуда. Подсказка задаётся через prompt.
+                TextField("Ссылка:", text: Binding(
+                    get: { store.newMeetingDomainText },
+                    set: { store.newMeetingDomainText = $0 }
+                ), prompt: Text("vcs.example.com"))
+
+                TextField("Название:", text: Binding(
+                    get: { store.newMeetingLabelText },
+                    set: { store.newMeetingLabelText = $0 }
+                ), prompt: Text("Внутренняя ВКС"))
+
                 HStack {
-                    TextField("Фрагмент ссылки, например vcs.example.com", text: Binding(
-                        get: { store.newMeetingDomainText },
-                        set: { store.newMeetingDomainText = $0 }
-                    ))
-                    TextField("Название", text: Binding(
-                        get: { store.newMeetingLabelText },
-                        set: { store.newMeetingLabelText = $0 }
-                    ))
-                    .frame(width: 150)
-                    Button("Добавить") {
+                    Spacer()
+                    Button("Добавить платформу") {
                         store.addCustomMeetingDomain(domain: store.newMeetingDomainText,
                                                      label: store.newMeetingLabelText)
                         store.newMeetingDomainText = ""

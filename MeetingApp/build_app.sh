@@ -23,6 +23,7 @@ if [ "$BUILD_KIND" = "test" ]; then
   DISPLAY_NAME="Обработка встреч (тест)"
   DATA_FOLDER="MeetingApp-Test"
   LEGACY_DATA_FOLDER="Встречи-тест"
+  LEGACY_BUNDLE_ID="ru.sk.meetingapp.test"
   # Модели общие и принадлежат рабочей сборке — тестовая их не забирает,
   # иначе проверка правок унесла бы гигабайты из-под рабочего приложения.
   LEGACY_MODELS_FOLDER=""
@@ -32,6 +33,7 @@ else
   DISPLAY_NAME="Обработка встреч"
   DATA_FOLDER="MeetingApp"
   LEGACY_DATA_FOLDER="Встречи"
+  LEGACY_BUNDLE_ID="ru.sk.meetingapp"
   LEGACY_MODELS_FOLDER="whisper-models"
 fi
 
@@ -136,6 +138,10 @@ cat > "$APP_BUNDLE/Contents/Info.plist" << EOF
     <string>$LEGACY_DATA_FOLDER</string>
     <key>MALegacyModelsFolder</key>
     <string>$LEGACY_MODELS_FOLDER</string>
+    <!-- Прежний идентификатор: macOS хранит настройки по идентификатору, и при
+         его смене они остаются в старом хранилище. Переносим один раз. -->
+    <key>MALegacyBundleID</key>
+    <string>$LEGACY_BUNDLE_ID</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundlePackageType</key>

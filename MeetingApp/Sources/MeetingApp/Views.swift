@@ -212,145 +212,39 @@ struct JobRowView: View {
     }
 
     var body: some View {
+        // Название и статус — сверху, действия — отдельной строкой под ними.
+        // Так длинные названия не сжимают кнопки, а кнопки всегда стоят на
+        // одних и тех же местах и не прыгают от того, что происходит с задачей.
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 Image(systemName: job.stage.symbolName)
-                    .foregroundColor(statusColor)
-                    .frame(width: 18)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(job.name)
-                        .font(.body)
-                        .lineLimit(1)
-                    HStack(spacing: 6) {
-                        Text(job.stage.title)
-                            .foregroundColor(statusColor)
-                        Text("·")
-                            .foregroundColor(.secondary)
-                        Text(DateFormatter.rowDate.string(from: job.updatedAt))
-                            .foregroundColor(.secondary)
-                    }
+                    .foregroundStyle(statusColor)
+                    .frame(width: 16)
+                Text(job.name)
+                    .font(.body)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 8)
+                Text(DateFormatter.rowDate.string(from: job.updatedAt))
                     .font(.caption)
-                    if let error = job.lastError {
-                        if job.lastErrorDetail != nil {
-                            Button {
-                                store.toggleErrorDetail(jobID: job.id)
-                            } label: {
-                                HStack(spacing: 3) {
-                                    Image(systemName: showErrorDetail ? "chevron.down" : "chevron.right")
-                                    Text(error)
-                                        .lineLimit(1)
-                                }
-                            }
-                            .buttonStyle(.plain)
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                            .help("Показать подробности ошибки")
-                        } else {
-                            Text(error)
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                                .lineLimit(1)
-                        }
-                    }
-                }
-
-                Spacer()
-
-                actionButtons
+                    .foregroundStyle(.secondary)
+                    .fixedSize()
             }
 
-            if showErrorDetail, let detail = job.lastErrorDetail {
-                ErrorDetailView(text: detail)
+            Text(job.stage.title)
+                .font(.caption)
+                .foregroundStyle(statusColor)
+
+            if let error = job.lastError {
+                Text(error)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
+
         }
         .padding(.vertical, 4)
-    }
-
-    private var actionButtons: some View {
-        HStack(spacing: 6) {
-            if isCurrent && job.stage.isRunning {
-                Button {
-                    store.pauseCurrent()
-                } label: {
-                    Label("Отмена", systemImage: "pause.fill")
-                }
-                .help("Остановить текущий шаг и запомнить, на чём остановились — можно продолжить позже")
-            } else if job.stage.isResumable {
-                Button {
-                    store.resume(jobID: job.id)
-                } label: {
-                    Label(job.hasTranscript ? "Продолжить" : "Запустить",
-                          systemImage: "play.fill")
-                }
-                .help(job.hasTranscript
-                      ? "Транскрипт уже готов — продолжим с шага саммари"
-                      : "Начать обработку")
-            }
-
-            if job.stage != .done {
-                Button(role: .destructive) {
-                    store.stopAndClear(jobID: job.id)
-                } label: {
-                    Image(systemName: "trash")
-                }
-                .help("Удалить: убрать задачу и стереть её промежуточные файлы насовсем")
-            }
-
-            if job.hasTranscript, let path = job.transcriptPath {
-                Button {
-                    store.revealInFinder(path: path)
-                } label: {
-                    Image(systemName: "doc.text")
-                }
-                .help("Показать транскрипт в Finder")
-            }
-
-            // Куда отправить готовое саммари — решает человек, поэтому это
-            // отдельные кнопки. Неактивная кнопка сразу показывает, что
-            // действие недоступно, вместо ошибки после нажатия.
-            if store.hasSummary(job) {
-                Button {
-                    store.openSummary(jobID: job.id)
-                } label: {
-                    Image(systemName: "doc.richtext")
-                }
-                .help("Открыть саммари")
-
-                Button {
-                    store.exportSummary(jobID: job.id, to: "notion")
-                } label: {
-                    if store.exportingJobIDs.contains(job.id) {
-                        ProgressView().controlSize(.mini)
-                    } else {
-                        Label("В Notion", systemImage: "arrow.up.doc")
-                    }
-                }
-                .disabled(!store.isNotionConnected || store.exportingJobIDs.contains(job.id))
-                .help(store.isNotionConnected
-                      ? (job.notionURL == nil ? "Выгрузить саммари в Notion" : "Выгрузить в Notion ещё раз")
-                      : "Notion не подключён к Claude Code — подключи его в настройках Claude")
-
-                Button {
-                    store.exportSummary(jobID: job.id, to: "notes")
-                } label: {
-                    Label("В Заметки", systemImage: "note.text")
-                }
-                .disabled(store.exportingJobIDs.contains(job.id))
-                .help(job.savedToNotes ? "Сохранить в Заметки ещё раз" : "Сохранить саммари в Заметки")
-            }
-
-            if let link = job.notionURL {
-                Button {
-                    store.openURL(link)
-                } label: {
-                    Image(systemName: "arrow.up.forward.square")
-                }
-                .help("Открыть запись в Notion")
-            }
-        }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
     }
 }
 
@@ -692,8 +586,9 @@ struct MeetingAppEntry: App {
     var body: some Scene {
         WindowGroup {
             ContentView(store: store)
-                .frame(minWidth: 860, minHeight: 560)
+                .frame(minWidth: 960, minHeight: 600)
         }
+        .defaultSize(width: 1180, height: 760)
         .commands { AppCommands(store: store) }
 
         // Системная сцена настроек: даёт пункт в меню приложения и ⌘, без

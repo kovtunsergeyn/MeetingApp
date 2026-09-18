@@ -10,23 +10,20 @@ import MeetingCore
 enum AppSection: String, Identifiable, CaseIterable {
     case queue
     case history
-    case meetings
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .queue: return "Очередь"
+        case .queue: return "Обработка"
         case .history: return "История"
-        case .meetings: return "Записи встреч"
         }
     }
 
     var symbol: String {
         switch self {
-        case .queue: return "gearshape.2"
+        case .queue: return "waveform"
         case .history: return "clock.arrow.circlepath"
-        case .meetings: return "video.fill"
         }
     }
 }
@@ -39,9 +36,7 @@ struct ContentView: View {
         case .queue:
             return JobStore.sortedForDisplay(store.jobs.filter { $0.stage != .done })
         case .history:
-            return store.filteredJobs
-        case .meetings:
-            return store.meetingRecordingJobs
+            return store.stageFilter == "meetings" ? store.meetingRecordingJobs : store.filteredJobs
         }
     }
 
@@ -110,7 +105,6 @@ struct ContentView: View {
         switch section {
         case .queue: return store.jobs.filter { $0.stage != .done }.count
         case .history: return store.jobs.count
-        case .meetings: return store.meetingRecordingJobs.count
         }
     }
 
@@ -120,6 +114,8 @@ struct ContentView: View {
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItemGroup(placement: .principal) {
+            // Подписи рядом со значками: по одному значку непонятно, что
+            // делает кнопка, а запись встречи — самое важное действие окна.
             Button {
                 if store.isMeetingRecordingActive {
                     store.stopMeetingRecording()
@@ -128,8 +124,11 @@ struct ContentView: View {
                 }
             } label: {
                 Label(store.isMeetingRecordingActive ? "Остановить запись" : "Записать встречу",
-                      systemImage: store.isMeetingRecordingActive ? "stop.circle" : "record.circle")
+                      systemImage: store.isMeetingRecordingActive ? "stop.circle.fill" : "record.circle")
+                    .labelStyle(.titleAndIcon)
             }
+            .buttonStyle(.borderedProminent)
+            .tint(store.isMeetingRecordingActive ? .red : .accentColor)
             .help(store.isMeetingRecordingActive
                   ? "Остановить запись и отправить её в обработку"
                   : "Записать идущую встречу: системный звук и микрофон")
@@ -138,18 +137,26 @@ struct ContentView: View {
                 store.pickMediaFiles()
             } label: {
                 Label("Добавить файл", systemImage: "plus")
+                    .labelStyle(.titleAndIcon)
             }
             .help("Добавить видео или аудио для расшифровки")
         }
 
-        ToolbarItem(placement: .automatic) {
-            Toggle(isOn: Binding(
-                get: { store.meetingDetectionEnabled },
-                set: { store.meetingDetectionEnabled = $0 }
-            )) {
-                Label("Следить за встречами", systemImage: "eye")
+        if store.selectedSection == .history {
+            ToolbarItem(placement: .automatic) {
+                Picker("Фильтр", selection: Binding(
+                    get: { store.stageFilter },
+                    set: { store.stageFilter = $0 }
+                )) {
+                    Text("Все").tag("all")
+                    Text("Только записи встреч").tag("meetings")
+                    Divider()
+                    ForEach(JobStage.allCases, id: \.rawValue) { stage in
+                        Text(stage.title).tag(stage.rawValue)
+                    }
+                }
+                .frame(width: 200)
             }
-            .help("Предлагать запись, когда начинается встреча в браузере или календаре")
         }
     }
 }
@@ -165,10 +172,11 @@ struct JobListView: View {
             if jobs.isEmpty {
                 EmptyStateView(store: store, section: store.selectedSection)
             } else {
-                List(jobs, selection: Binding<UUID?>(
+                List(selection: Binding<UUID?>(
                     get: { store.selectedJobID },
                     set: { store.selectedJobID = $0 }
-                )) { job in
+                )) {
+                    ForEach(jobs) { job in
                     JobRowView(store: store, job: job)
                         .tag(job.id)
                         .contextMenu {
@@ -179,13 +187,15 @@ struct JobListView: View {
                             }
                             Button("Удалить из истории") { store.removeJob(jobID: job.id) }
                         }
+                    }
                 }
+                .listStyle(.inset)
             }
         }
-        .searchable(text: Binding(
-            get: { store.searchText },
-            set: { store.searchText = $0 }
-        ), placement: .toolbar, prompt: "Поиск по названию")
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Поиск нужен только в истории: в обработке задач единицы, а поле
+        // вытесняло из панели кнопку добавления файла.
+        .modifier(SearchIfNeeded(store: store))
     }
 }
 
@@ -208,12 +218,7 @@ struct EmptyStateView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
-            if section == .meetings {
-                Button("Записать встречу") { store.startMeetingRecording() }
-                    .buttonStyle(.borderedProminent)
-            } else {
-                Button("Добавить файл…") { store.pickMediaFiles() }
-            }
+            Button("Добавить файл…") { store.pickMediaFiles() }
         }
         .padding(28)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -223,7 +228,6 @@ struct EmptyStateView: View {
         switch section {
         case .queue: return "Очередь пуста"
         case .history: return store.searchText.isEmpty ? "Пока ничего не обработано" : "Ничего не найдено"
-        case .meetings: return "Записей встреч пока нет"
         }
     }
 
@@ -233,7 +237,6 @@ struct EmptyStateView: View {
         case .history: return store.searchText.isEmpty
             ? "Перетащите видео или аудио в окно, добавьте ссылку на YouTube или запишите встречу."
             : "Попробуйте другое слово или снимите фильтр."
-        case .meetings: return "Запись встречи можно начать вручную или доверить приложению — оно предложит, когда встреча начнётся."
         }
     }
 }
@@ -279,5 +282,23 @@ struct AddWorkView: View {
             .frame(maxWidth: 620, alignment: .leading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+}
+
+
+// MARK: - Поиск только там, где он нужен
+
+struct SearchIfNeeded: ViewModifier {
+    @ObservedObject var store: JobStore
+
+    func body(content: Content) -> some View {
+        if store.selectedSection == .history {
+            content.searchable(text: Binding(
+                get: { store.searchText },
+                set: { store.searchText = $0 }
+            ), placement: .toolbar, prompt: "Поиск по названию")
+        } else {
+            content
+        }
     }
 }

@@ -86,10 +86,12 @@ final class JobStore: ObservableObject {
         let cleanLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanDomain.isEmpty else { return }
         customMeetingDomains.append(CustomMeetingDomain(domain: cleanDomain, label: cleanLabel.isEmpty ? cleanDomain : cleanLabel))
+        appendLog("Добавлена платформа ВКС: \(cleanDomain). Всего своих платформ: \(customMeetingDomains.count).")
     }
 
     func removeCustomMeetingDomain(_ id: UUID) {
         customMeetingDomains.removeAll { $0.id == id }
+        appendLog("Удалена платформа ВКС. Осталось своих платформ: \(customMeetingDomains.count).")
     }
 
     private static func loadCustomMeetingDomains() -> [CustomMeetingDomain] {
@@ -426,6 +428,7 @@ final class JobStore: ObservableObject {
     // MARK: - Инициализация
 
     init() {
+        JobStore.migrateLegacySettingsIfNeeded()
         migrateLegacyLayoutIfNeeded()
         createDirectories()
         loadHistory()
@@ -438,6 +441,36 @@ final class JobStore: ObservableObject {
 
     private func createDirectories() {
         layout.createDirectories()
+    }
+
+    // MARK: - Переезд настроек со старого идентификатора
+
+    // macOS хранит настройки приложения по идентификатору пакета. Когда мы
+    // сменили идентификатор на нейтральный, все настройки — словарь, язык,
+    // выбранная модель, свои платформы ВКС — остались в прежнем хранилище и
+    // приложение запустилось пустым. Переносим их один раз при первом запуске.
+    static func migrateLegacySettingsIfNeeded() {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: "settingsMigratedFromLegacyBundle") else { return }
+        guard let legacyID = Bundle.main.object(forInfoDictionaryKey: "MALegacyBundleID") as? String,
+              !legacyID.isEmpty,
+              legacyID != Bundle.main.bundleIdentifier,
+              let legacy = UserDefaults(suiteName: legacyID) else { return }
+
+        let keys = [
+            "languageID", "modelID", "glossary", "notionDatabaseName",
+            "customMeetingDomains", "meetingDetectionEnabled", "selectedMicrophoneDeviceID"
+        ]
+        var moved: [String] = []
+        for key in keys where defaults.object(forKey: key) == nil {
+            guard let value = legacy.object(forKey: key) else { continue }
+            defaults.set(value, forKey: key)
+            moved.append(key)
+        }
+        defaults.set(true, forKey: "settingsMigratedFromLegacyBundle")
+        if !moved.isEmpty {
+            NSLog("MeetingApp: перенесены настройки со старого идентификатора: %@", moved.joined(separator: ", "))
+        }
     }
 
     // MARK: - Переезд со старой раскладки
@@ -531,7 +564,35 @@ final class JobStore: ObservableObject {
 
     func appendLog(_ line: String) {
         let stamp = DateFormatter.logStamp.string(from: Date())
-        logText += "[" + stamp + "] " + line + "\n"
+        let entry = "[" + stamp + "] " + line + "\n"
+        logText += entry
+        writeToLogFile(entry)
+    }
+
+    // Лог живёт и в файле: окно с логом человек обычно открывает уже после
+    // того, как что-то пошло не так, а в памяти остаётся только текущий запуск.
+    private var logFileURL: URL { return URL(fileURLWithPath: baseDir + "/app.log") }
+
+    private func writeToLogFile(_ entry: String) {
+        guard let data = entry.data(using: .utf8) else { return }
+        let fm = FileManager.default
+        if let handle = try? FileHandle(forWritingTo: logFileURL) {
+            defer { try? handle.close() }
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: data)
+            // Чтобы файл не рос без предела, раз в запуск подрезаем его.
+            if let size = try? fm.attributesOfItem(atPath: logFileURL.path)[.size] as? Int, size > 2_000_000 {
+                trimLogFile()
+            }
+        } else {
+            try? data.write(to: logFileURL)
+        }
+    }
+
+    private func trimLogFile() {
+        guard let text = try? String(contentsOf: logFileURL, encoding: .utf8) else { return }
+        let tail = text.suffix(500_000)
+        try? String(tail).data(using: .utf8)?.write(to: logFileURL)
     }
 
     // MARK: - Прогресс текущего шага (замена развёрнутого лога по умолчанию)
@@ -1091,6 +1152,7 @@ final class JobStore: ObservableObject {
                     $0.lastErrorDetail = errorDetail(from: result.output)
                 }
                 appendLog("\(message): \(job.fileName)")
+                MeetingNotifier.shared.notifyJobFinished(name: job.name, succeeded: false, detail: message)
                 return
             }
 
@@ -1144,11 +1206,14 @@ final class JobStore: ObservableObject {
                 $0.lastErrorDetail = errorDetail(from: result.output)
             }
             appendLog("Ошибка саммари: \(job.fileName). Транскрипт сохранён — можно продолжить позже.")
+            MeetingNotifier.shared.notifyJobFinished(name: job.name, succeeded: false,
+                                                     detail: "шаг саммари не прошёл")
             return
         }
 
         updateJob(jobID) { $0.stage = .done; $0.lastError = nil; $0.lastErrorDetail = nil }
-        appendLog("Саммари готово: \(job.fileName). Выгрузить его можно кнопками в истории.")
+        appendLog("Саммари готово: \(job.fileName). Выгрузить его можно кнопками в подробностях задачи.")
+        MeetingNotifier.shared.notifyJobFinished(name: job.name, succeeded: true, detail: nil)
 
         moveSourceToArchive(jobID: jobID)
     }
