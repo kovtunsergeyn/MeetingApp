@@ -19,7 +19,7 @@ SIGN_IDENTITY="MeetingApp Local Signing"
 
 if [ "$BUILD_KIND" = "test" ]; then
   APP_NAME="MeetingApp-Test"
-  BUNDLE_ID="ru.sk.meetingapp.test"
+  BUNDLE_ID="com.meetingapp.macos.test"
   DISPLAY_NAME="Обработка встреч (тест)"
   DATA_FOLDER="MeetingApp-Test"
   LEGACY_DATA_FOLDER="Встречи-тест"
@@ -28,7 +28,7 @@ if [ "$BUILD_KIND" = "test" ]; then
   LEGACY_MODELS_FOLDER=""
 else
   APP_NAME="MeetingApp"
-  BUNDLE_ID="ru.sk.meetingapp"
+  BUNDLE_ID="com.meetingapp.macos"
   DISPLAY_NAME="Обработка встреч"
   DATA_FOLDER="MeetingApp"
   LEGACY_DATA_FOLDER="Встречи"
@@ -105,6 +105,10 @@ mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources"
 # внутри бандла — по имени сборки, чтобы тестовая и рабочая различались в Dock.
 cp "$BUILD_DIR/MeetingApp" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 cp Resources/AppIcon.icns "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
+# Переводы: русский — язык разработки (строки в коде), остальные лежат рядом.
+# Чтобы добавить язык, достаточно создать Resources/Localization/<код>.lproj
+# с файлом Localizable.strings — сборка подхватит его автоматически.
+cp -R Resources/Localization/*.lproj "$APP_BUNDLE/Contents/Resources/"
 
 cat > "$APP_BUNDLE/Contents/Info.plist" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -136,6 +140,12 @@ cat > "$APP_BUNDLE/Contents/Info.plist" << EOF
     <string>AppIcon</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>ru</string>
+    <key>CFBundleLocalizations</key>
+    <array>
+$(for d in Resources/Localization/*.lproj; do echo "        <string>$(basename "$d" .lproj)</string>"; done)
+    </array>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
     <key>NSHighResolutionCapable</key>

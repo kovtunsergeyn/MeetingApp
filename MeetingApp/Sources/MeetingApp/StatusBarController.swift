@@ -78,14 +78,14 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     // подставляет свою (например, шестерёнку к «Настройки…») и выравнивает
     // соседние пункты по колонке иконок — строки разъезжаются.
     private func actionItem(_ title: String, _ selector: Selector, _ symbol: String) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: selector, keyEquivalent: "")
+        let item = NSMenuItem(title: NSLocalizedString(title, comment: ""), action: selector, keyEquivalent: "")
         item.target = self
         item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
         return item
     }
 
     private func disabledItem(_ title: String) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        let item = NSMenuItem(title: NSLocalizedString(title, comment: ""), action: nil, keyEquivalent: "")
         item.isEnabled = false
         return item
     }

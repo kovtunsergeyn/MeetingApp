@@ -45,11 +45,6 @@ final class JobStore: ObservableObject {
         }
     }
 
-    // Куда сохранять итог — спрашиваем один раз, дальше это настройка по умолчанию.
-    @Published var showSaveDestinationSheet: Bool = false
-    @Published var pendingSaveNotes: Bool = SaveDestinations.default.notes
-    @Published var pendingSaveNotion: Bool = SaveDestinations.default.notion
-    private var saveDestinationContinuation: CheckedContinuation<SaveDestinations, Never>?
 
     let audioRecorder = AudioRecorder()
     let systemAudioRecorder = SystemAudioRecorder()
@@ -326,24 +321,8 @@ final class JobStore: ObservableObject {
 
     private var selectedModel: WhisperModelOption { return WhisperModelOption.byID(modelID) }
 
-    private var saveDestinationsConfigured: Bool {
-        return UserDefaults.standard.bool(forKey: "saveDestinationsConfigured")
-    }
 
-    private func persistedSaveDestinations() -> SaveDestinations {
-        return SaveDestinations(
-            notes: UserDefaults.standard.bool(forKey: "saveToNotes"),
-            notion: UserDefaults.standard.object(forKey: "saveToNotion") == nil
-                ? SaveDestinations.default.notion
-                : UserDefaults.standard.bool(forKey: "saveToNotion")
-        )
-    }
 
-    func setDefaultSaveDestinations(notes: Bool, notion: Bool) {
-        UserDefaults.standard.set(notes, forKey: "saveToNotes")
-        UserDefaults.standard.set(notion, forKey: "saveToNotion")
-        UserDefaults.standard.set(true, forKey: "saveDestinationsConfigured")
-    }
 
     // MARK: - Пути
 
@@ -952,28 +931,6 @@ final class JobStore: ObservableObject {
         return nil
     }
 
-    // MARK: - Выбор места сохранения (спрашиваем один раз, дальше — как настройка)
-
-    func confirmSaveDestinations() {
-        setDefaultSaveDestinations(notes: pendingSaveNotes, notion: pendingSaveNotion)
-        showSaveDestinationSheet = false
-        saveDestinationContinuation?.resume(returning: SaveDestinations(notes: pendingSaveNotes, notion: pendingSaveNotion))
-        saveDestinationContinuation = nil
-    }
-
-    private func ensureSaveDestinationsChosen() async -> SaveDestinations {
-        if saveDestinationsConfigured {
-            return persistedSaveDestinations()
-        }
-        let current = persistedSaveDestinations()
-        pendingSaveNotes = current.notes
-        pendingSaveNotion = current.notion
-        showSaveDestinationSheet = true
-        return await withCheckedContinuation { continuation in
-            saveDestinationContinuation = continuation
-        }
-    }
-
     // MARK: - Запуск обработки
 
     private func run(jobID: UUID) {
@@ -1116,27 +1073,17 @@ final class JobStore: ObservableObject {
             updateJob(jobID) { $0.stage = .transcribed; $0.lastError = "Claude Code не установлен или не авторизован" }
             pendingDependencies = [Dependency.claude]
             showDependencySheet = true
-            appendLog("Транскрипт сохранён, но Claude Code не готов — шаг сохранения можно продолжить позже.")
+            appendLog("Транскрипт сохранён, но Claude Code не готов — саммари можно собрать позже.")
             return
         }
 
-        let destinations = await ensureSaveDestinationsChosen()
-        if cancelRequested { return }
-
         updateJob(jobID) { $0.stage = .summarizing; $0.lastError = nil; $0.lastErrorDetail = nil }
-        appendLog("── Саммари и сохранение (\(destinationsLabel(destinations))): \(job.fileName)")
+        appendLog("── Саммари: \(job.fileName)")
 
         startStageTimer(estimatedSeconds: nil)
         let result = await runScript(
             name: "summarize.sh",
-            arguments: [
-                transcriptPath,
-                job.name,
-                destinations.notes ? "1" : "0",
-                destinations.notion ? "1" : "0",
-                glossary,
-                notionDatabaseName
-            ],
+            arguments: [transcriptPath, job.name, glossary],
             jobID: jobID
         )
         stopStageTimer()
@@ -1158,9 +1105,8 @@ final class JobStore: ObservableObject {
             return
         }
 
-        let notionLink = extractNotionURL(from: result.output)
-        updateJob(jobID) { $0.stage = .done; $0.notionURL = notionLink; $0.lastError = nil; $0.lastErrorDetail = nil }
-        appendLog("Готово: \(job.fileName)")
+        updateJob(jobID) { $0.stage = .done; $0.lastError = nil; $0.lastErrorDetail = nil }
+        appendLog("Саммари готово: \(job.fileName). Выгрузить его можно кнопками в истории.")
 
         moveSourceToArchive(jobID: jobID)
     }
@@ -1171,12 +1117,6 @@ final class JobStore: ObservableObject {
         return OutputParsing.errorDetail(from: output)
     }
 
-    private func destinationsLabel(_ destinations: SaveDestinations) -> String {
-        var parts: [String] = []
-        if destinations.notes { parts.append("Заметки") }
-        if destinations.notion { parts.append("Notion") }
-        return parts.isEmpty ? "без сохранения" : parts.joined(separator: " + ")
-    }
 
     // MARK: - Запуск при входе в систему
 
@@ -1196,6 +1136,86 @@ final class JobStore: ObservableObject {
             } catch {
                 appendLog("Не удалось изменить автозапуск: \(error.localizedDescription)")
             }
+        }
+    }
+
+    // MARK: - Выгрузка готового саммари
+
+    // Приложение само никуда ничего не отправляет: транскрипт и саммари
+    // остаются на компьютере, а выгрузку в Notion или Заметки человек
+    // запускает кнопкой, когда посмотрел результат.
+    @Published var exportingJobIDs: Set<UUID> = []
+
+    func summaryPath(for job: Job) -> String? {
+        guard let transcriptPath = job.transcriptPath else { return nil }
+        let path = URL(fileURLWithPath: transcriptPath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("summary.md").path
+        return FileManager.default.fileExists(atPath: path) ? path : nil
+    }
+
+    func hasSummary(_ job: Job) -> Bool {
+        return summaryPath(for: job) != nil
+    }
+
+    func exportSummary(jobID: UUID, to target: String) {
+        guard let job = jobs.first(where: { $0.id == jobID }), let summary = summaryPath(for: job) else {
+            appendLog("Саммари ещё нет — выгружать нечего.")
+            return
+        }
+        guard !exportingJobIDs.contains(jobID) else { return }
+        exportingJobIDs.insert(jobID)
+
+        Task {
+            var arguments = [target, summary, job.name]
+            if target == "notion" {
+                arguments.append(notionDatabaseName)
+                arguments.append(job.transcriptPath ?? "")
+            }
+            appendLog("Выгружаю саммари (\(target)): \(job.name)")
+            let result = await runScript(name: "export_summary.sh", arguments: arguments, jobID: nil)
+            exportingJobIDs.remove(jobID)
+
+            if result.exitCode == 0 {
+                if target == "notion", let link = extractNotionURL(from: result.output) {
+                    updateJob(jobID) { $0.notionURL = link }
+                }
+                if target == "notes" {
+                    updateJob(jobID) { $0.savedToNotes = true }
+                }
+                appendLog("Выгрузка завершена: \(job.name)")
+            } else {
+                appendLog("Не удалось выгрузить (\(target)): \(job.name)")
+            }
+        }
+    }
+
+    // Показать файл саммари в Finder — самый простой способ забрать результат.
+    func revealSummary(jobID: UUID) {
+        guard let job = jobs.first(where: { $0.id == jobID }), let summary = summaryPath(for: job) else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: summary)])
+    }
+
+    func openSummary(jobID: UUID) {
+        guard let job = jobs.first(where: { $0.id == jobID }), let summary = summaryPath(for: job) else { return }
+        NSWorkspace.shared.open(URL(fileURLWithPath: summary))
+    }
+
+    // Сохранить копию саммари в выбранное место.
+    func saveSummaryCopy(jobID: UUID) {
+        guard let job = jobs.first(where: { $0.id == jobID }), let summary = summaryPath(for: job) else { return }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = job.name + ".md"
+        panel.allowedContentTypes = []
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        do {
+            if FileManager.default.fileExists(atPath: destination.path) {
+                try FileManager.default.removeItem(at: destination)
+            }
+            try FileManager.default.copyItem(atPath: summary, toPath: destination.path)
+            appendLog("Саммари сохранено: \(destination.path)")
+        } catch {
+            appendLog("Не удалось сохранить саммари: \(error.localizedDescription)")
         }
     }
 

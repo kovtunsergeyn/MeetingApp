@@ -1,0 +1,103 @@
+/* English translation.
+   The key is the Russian string exactly as it appears in the source code:
+   Russian is the development language, so untranslated strings fall back to it.
+   To add a language, copy this folder to <code>.lproj and translate the values. */
+
+/* Tabs and main window */
+"Обработка встреч" = "Meetings";
+"Обработка" = "Queue";
+"История и встречи" = "History & meetings";
+"Настройки" = "Settings";
+"Лог" = "Log";
+
+/* Adding work */
+"Перетащи сюда видео, аудио или готовый транскрипт (.txt)" = "Drop a video, audio file or a ready transcript (.txt) here";
+"или нажми, чтобы выбрать файлы" = "or click to choose files";
+"Ссылка на видео YouTube" = "YouTube video link";
+"Добавить" = "Add";
+"Прикрепить транскрипт (.txt)" = "Attach a transcript (.txt)";
+"Выбрать…" = "Choose…";
+"Наговорить текст с микрофона" = "Record from microphone";
+"Остановить и добавить" = "Stop and add";
+"Отменить" = "Cancel";
+
+/* Meeting recording */
+"Записать встречу" = "Record a meeting";
+"Остановить запись" = "Stop recording";
+"Предлагать запись при входе на встречу" = "Offer to record when a meeting starts";
+"Похоже, у тебя встреча" = "Looks like you are in a meeting";
+"Начать запись" = "Start recording";
+"Не сейчас" = "Not now";
+
+/* Job list */
+"Поиск по названию" = "Search by name";
+"Ничего не найдено." = "Nothing found.";
+"Все" = "All";
+"Только записи встреч" = "Meeting recordings only";
+"Удалить из истории" = "Remove from history";
+"Активных задач нет." = "No active jobs.";
+"Отмена" = "Pause";
+"Продолжить" = "Resume";
+"Запустить" = "Start";
+
+/* Summary export */
+"Открыть саммари" = "Open summary";
+"Показать в Finder" = "Show in Finder";
+"Сохранить копию…" = "Save a copy…";
+"Выгрузить в Notion" = "Send to Notion";
+"Выгрузить в Notion ещё раз" = "Send to Notion again";
+"Сохранить в Заметки" = "Save to Notes";
+"Сохранить в Заметки ещё раз" = "Save to Notes again";
+"Открыть страницу в Notion" = "Open the Notion page";
+
+/* Settings */
+"Язык транскрибации" = "Transcription language";
+"Словарь терминов и имён" = "Glossary of terms and names";
+"Открыть словарь…" = "Open glossary…";
+"База Notion для саммари" = "Notion database for summaries";
+"Саммари встреч" = "Meeting summaries";
+"Модели распознавания (whisper)" = "Speech recognition models (whisper)";
+"Скачать" = "Download";
+"Свои платформы ВКС (внутрикорпоративные и т.п.)" = "Your own meeting platforms";
+"Фрагмент ссылки, например vcs.example.com" = "Part of the link, e.g. vcs.example.com";
+"Название" = "Name";
+"Папка со скриптами" = "Scripts folder";
+"Путь к папке scripts" = "Path to the scripts folder";
+"Запускать при входе в систему" = "Launch at login";
+"Проверить компоненты" = "Check components";
+"Удалить приложение…" = "Uninstall…";
+"Готово" = "Done";
+"Закрыть" = "Close";
+"рекомендовано" = "recommended";
+
+/* Dependencies and sign-in */
+"Не хватает компонентов" = "Missing components";
+"Чтобы обработка заработала, нужно доустановить:" = "To run the pipeline, these need to be installed:";
+"Установить" = "Install";
+"Устанавливаю… это может занять несколько минут." = "Installing… this may take a few minutes.";
+"Вход в Claude Code" = "Sign in to Claude Code";
+"Код подтверждения" = "Verification code";
+"Подтвердить" = "Confirm";
+"Открыть страницу входа ещё раз" = "Open the sign-in page again";
+
+/* Uninstall */
+"Удаление приложения" = "Uninstalling the app";
+"Проверить без удаления" = "Preview without deleting";
+"Удалить отмеченное" = "Delete selected";
+
+/* Errors */
+"Скопировать" = "Copy";
+"Открыть настройки" = "Open settings";
+"Перезапустить приложение" = "Restart the app";
+"Не удалось начать запись" = "Could not start recording";
+"Нет доступа к микрофону" = "No microphone access";
+"Ок" = "OK";
+
+/* Menu bar */
+"Начать запись встречи" = "Start recording a meeting";
+"Остановить запись и обработать" = "Stop recording and process";
+"Добавить видео или аудио…" = "Add video or audio…";
+"Добавить готовый транскрипт…" = "Add a ready transcript…";
+"Открыть приложение" = "Open the app";
+"Настройки…" = "Settings…";
+"Завершить" = "Quit";

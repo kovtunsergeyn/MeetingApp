@@ -295,6 +295,43 @@ struct JobRowView: View {
                 .help("Показать транскрипт в Finder")
             }
 
+            // Куда отправить готовое саммари — решает человек, поэтому это
+            // кнопки, а не шаг обработки.
+            if store.hasSummary(job) {
+                Button {
+                    store.openSummary(jobID: job.id)
+                } label: {
+                    Image(systemName: "doc.richtext")
+                }
+                .help("Открыть саммари")
+
+                Menu {
+                    Button("Открыть саммари") { store.openSummary(jobID: job.id) }
+                    Button("Показать в Finder") { store.revealSummary(jobID: job.id) }
+                    Button("Сохранить копию…") { store.saveSummaryCopy(jobID: job.id) }
+                    Divider()
+                    Button(job.notionURL == nil ? "Выгрузить в Notion" : "Выгрузить в Notion ещё раз") {
+                        store.exportSummary(jobID: job.id, to: "notion")
+                    }
+                    Button(job.savedToNotes ? "Сохранить в Заметки ещё раз" : "Сохранить в Заметки") {
+                        store.exportSummary(jobID: job.id, to: "notes")
+                    }
+                    if let link = job.notionURL {
+                        Divider()
+                        Button("Открыть страницу в Notion") { store.openURL(link) }
+                    }
+                } label: {
+                    if store.exportingJobIDs.contains(job.id) {
+                        ProgressView().controlSize(.mini)
+                    } else {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help("Выгрузить саммари: Notion, Заметки или файл")
+            }
+
             if let link = job.notionURL {
                 Button {
                     store.openURL(link)
@@ -398,12 +435,31 @@ struct StageProgressView: View {
 struct HistoryTabView: View {
     @ObservedObject var store: JobStore
 
+    private var elapsedText: String {
+        let minutes = store.meetingRecordingElapsedSeconds / 60
+        let seconds = store.meetingRecordingElapsedSeconds % 60
+        return String(format: "%02d:%02d", minutes, seconds)
+    }
+
+    // Записи встреч и загруженные файлы проходят один и тот же путь, поэтому
+    // живут в одном списке: отдельная вкладка только заставляла искать задачу
+    // в двух местах. Разделить их по-прежнему можно фильтром.
     private var stageOptions: [(String, String)] {
-        var options: [(String, String)] = [("all", "Все статусы")]
+        var options: [(String, String)] = [("all", "Все"), ("meetings", "Только записи встреч")]
         for stage in JobStage.allCases {
             options.append((stage.rawValue, stage.title))
         }
         return options
+    }
+
+    private var visibleJobs: [Job] {
+        if store.stageFilter == "meetings" {
+            let search = store.searchText.trimmingCharacters(in: .whitespaces).lowercased()
+            return store.meetingRecordingJobs.filter {
+                search.isEmpty || $0.name.lowercased().contains(search)
+            }
+        }
+        return store.filteredJobs
     }
 
     var body: some View {
@@ -417,6 +473,8 @@ struct HistoryTabView: View {
         )
 
         return VStack(alignment: .leading, spacing: 12) {
+            recordingBar
+
             HStack {
                 Image(systemName: "magnifyingglass")
                     .foregroundColor(.secondary)
@@ -428,17 +486,17 @@ struct HistoryTabView: View {
                         Text(option.1).tag(option.0)
                     }
                 }
-                .frame(width: 180)
+                .frame(width: 200)
             }
 
-            if store.filteredJobs.isEmpty {
+            if visibleJobs.isEmpty {
                 Spacer()
                 Text("Ничего не найдено.")
                     .foregroundColor(.secondary)
                     .frame(maxWidth: .infinity)
                 Spacer()
             } else {
-                List(store.filteredJobs) { job in
+                List(visibleJobs) { job in
                     JobRowView(store: store, job: job)
                         .contextMenu {
                             Button("Удалить из истории") {
@@ -452,79 +510,6 @@ struct HistoryTabView: View {
             Text("Всего записей: \(store.jobs.count)")
                 .font(.caption)
                 .foregroundColor(.secondary)
-        }
-        .padding(16)
-    }
-}
-
-// MARK: - Вкладка «Записи встреч»
-
-struct MeetingRecordingsTabView: View {
-    @ObservedObject var store: JobStore
-
-    private var elapsedText: String {
-        let minutes = store.meetingRecordingElapsedSeconds / 60
-        let seconds = store.meetingRecordingElapsedSeconds % 60
-        return String(format: "%02d:%02d", minutes, seconds)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            if store.isMeetingRecordingActive {
-                HStack(spacing: 10) {
-                    Circle().fill(Color.red).frame(width: 8, height: 8)
-                    Text("Идёт запись встречи… \(elapsedText)")
-                        .font(.headline)
-                    Spacer()
-                    Button("Остановить запись") {
-                        store.stopMeetingRecording()
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
-                .padding(12)
-                .background(Color.red.opacity(0.08))
-                .cornerRadius(10)
-            } else {
-                HStack {
-                    Text("Автоопределение ВКС в браузере")
-                    Spacer()
-                    Toggle("", isOn: Binding(
-                        get: { store.meetingDetectionEnabled },
-                        set: { store.meetingDetectionEnabled = $0 }
-                    ))
-                    .labelsHidden()
-                }
-                .font(.callout)
-                .foregroundColor(.secondary)
-
-                HStack {
-                    MicrophonePickerView(store: store)
-                    Spacer()
-                    Button("Начать запись сейчас") {
-                        store.startMeetingRecording()
-                    }
-                }
-            }
-
-            Divider()
-
-            if store.meetingRecordingJobs.isEmpty {
-                Spacer()
-                Text("Записей встреч пока нет.")
-                    .foregroundColor(.secondary)
-                    .frame(maxWidth: .infinity)
-                Spacer()
-            } else {
-                List(store.meetingRecordingJobs) { job in
-                    JobRowView(store: store, job: job)
-                        .contextMenu {
-                            Button("Удалить из истории") {
-                                store.removeJob(jobID: job.id)
-                            }
-                        }
-                }
-                .listStyle(.inset)
-            }
         }
         .padding(16)
         .alert("Не удалось начать запись", isPresented: Binding(
@@ -545,7 +530,44 @@ struct MeetingRecordingsTabView: View {
         )) {
             Button("Ок", role: .cancel) {}
         } message: {
-            Text("Разреши доступ к микрофону в Настройках системы → Конфиденциальность и безопасность → Микрофон → MeetingApp.")
+            Text("Разреши доступ к микрофону в Настройках системы → Конфиденциальность и безопасность → Микрофон.")
+        }
+    }
+
+    // Строка управления записью встречи — над списком, чтобы начать запись
+    // можно было там же, где смотришь прошлые.
+    private var recordingBar: some View {
+        Group {
+            if store.isMeetingRecordingActive {
+                HStack(spacing: 10) {
+                    Circle().fill(Color.red).frame(width: 8, height: 8)
+                    Text("Идёт запись встречи… \(elapsedText)")
+                        .font(.headline)
+                    Spacer()
+                    Button("Остановить запись") {
+                        store.stopMeetingRecording()
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                .padding(12)
+                .background(Color.red.opacity(0.08))
+                .cornerRadius(10)
+            } else {
+                HStack(spacing: 10) {
+                    Toggle(isOn: Binding(
+                        get: { store.meetingDetectionEnabled },
+                        set: { store.meetingDetectionEnabled = $0 }
+                    )) {
+                        Text("Предлагать запись при входе на встречу")
+                            .font(.callout)
+                    }
+                    Spacer()
+                    MicrophonePickerView(store: store)
+                    Button("Записать встречу") {
+                        store.startMeetingRecording()
+                    }
+                }
+            }
         }
     }
 }
@@ -695,43 +717,6 @@ struct ClaudeLoginSheet: View {
         }
         .padding(24)
         .frame(width: 460)
-    }
-}
-
-// MARK: - Диалог «Куда сохранять итог»
-
-struct SaveDestinationSheet: View {
-    @ObservedObject var store: JobStore
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Label("Куда сохранять саммари?", systemImage: "tray.and.arrow.down")
-                .font(.title3).bold()
-
-            Text("Выбор станет значением по умолчанию для всех задач — поменять можно в Настройках.")
-                .font(.callout)
-                .foregroundColor(.secondary)
-
-            Toggle("В заметки (Notes.app)", isOn: Binding(
-                get: { store.pendingSaveNotes },
-                set: { store.pendingSaveNotes = $0 }
-            ))
-            Toggle("В Notion (база «\(store.notionDatabaseName)»)", isOn: Binding(
-                get: { store.pendingSaveNotion },
-                set: { store.pendingSaveNotion = $0 }
-            ))
-
-            HStack {
-                Spacer()
-                Button("Сохранить выбор") {
-                    store.confirmSaveDestinations()
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(!store.pendingSaveNotes && !store.pendingSaveNotion)
-            }
-        }
-        .padding(24)
-        .frame(width: 440)
     }
 }
 
@@ -901,27 +886,6 @@ struct SettingsSheet: View {
                 .padding(8)
                 .background(Color(nsColor: .textBackgroundColor))
                 .cornerRadius(8)
-            }
-
-            Divider()
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Куда сохранять саммари по умолчанию")
-                    .font(.subheadline)
-                Toggle("В заметки (Notes.app)", isOn: Binding(
-                    get: { store.pendingSaveNotes },
-                    set: {
-                        store.pendingSaveNotes = $0
-                        store.setDefaultSaveDestinations(notes: store.pendingSaveNotes, notion: store.pendingSaveNotion)
-                    }
-                ))
-                Toggle("В Notion", isOn: Binding(
-                    get: { store.pendingSaveNotion },
-                    set: {
-                        store.pendingSaveNotion = $0
-                        store.setDefaultSaveDestinations(notes: store.pendingSaveNotes, notion: store.pendingSaveNotion)
-                    }
-                ))
             }
 
             Divider()
@@ -1173,10 +1137,6 @@ struct ContentView: View {
             get: { store.showDependencySheet },
             set: { newValue in store.showDependencySheet = newValue }
         )
-        let saveDestBinding = Binding<Bool>(
-            get: { store.showSaveDestinationSheet },
-            set: { newValue in store.showSaveDestinationSheet = newValue }
-        )
         let claudeLoginBinding = Binding<Bool>(
             get: { store.showClaudeLoginSheet },
             set: { newValue in store.showClaudeLoginSheet = newValue }
@@ -1190,12 +1150,8 @@ struct ContentView: View {
                     .tag(0)
 
                 HistoryTabView(store: store)
-                    .tabItem { Label("История", systemImage: "clock.arrow.circlepath") }
+                    .tabItem { Label("История и встречи", systemImage: "clock.arrow.circlepath") }
                     .tag(1)
-
-                MeetingRecordingsTabView(store: store)
-                    .tabItem { Label("Записи встреч", systemImage: "video.fill") }
-                    .tag(2)
             }
             .padding(.top, 8)
         }
@@ -1203,9 +1159,6 @@ struct ContentView: View {
         .onAppear { StatusBarController.shared.install(store: store) }
         .sheet(isPresented: depsBinding) {
             DependencySheet(store: store)
-        }
-        .sheet(isPresented: saveDestBinding) {
-            SaveDestinationSheet(store: store)
         }
         .sheet(isPresented: claudeLoginBinding) {
             ClaudeLoginSheet(store: store)

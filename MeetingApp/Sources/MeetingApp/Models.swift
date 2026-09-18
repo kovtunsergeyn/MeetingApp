@@ -20,8 +20,11 @@ struct Job: Identifiable, Codable, Equatable {
     // Полный вывод упавшего шага (ffmpeg/whisper-cli/yt-dlp/claude) — для разворачиваемых подробностей ошибки.
     var lastErrorDetail: String? = nil
 
-    // Задача пришла из автозаписи встречи (ВКС) — показываем во вкладке «Записи встреч».
+    // Задача пришла из автозаписи встречи (ВКС) — в истории её можно отфильтровать.
     var isMeetingRecording: Bool = false
+
+    // Саммари уже выгружено в Заметки — чтобы не отправлять дважды.
+    var savedToNotes: Bool = false
 
     init(sourcePath: String) {
         let url = URL(fileURLWithPath: sourcePath)
@@ -114,17 +117,6 @@ struct Dependency: Identifiable, Equatable {
     var isAutoInstallable: Bool {
         return true
     }
-}
-
-// MARK: - Куда сохранять итог
-
-struct SaveDestinations: Equatable {
-    var notes: Bool
-    var notion: Bool
-
-    var isEmpty: Bool { return !notes && !notion }
-
-    static let `default` = SaveDestinations(notes: false, notion: true)
 }
 
 // MARK: - Браузеры, в которых ищем открытую встречу

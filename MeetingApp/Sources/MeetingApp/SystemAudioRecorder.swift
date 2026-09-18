@@ -19,7 +19,7 @@ final class SystemAudioRecorder: NSObject, ObservableObject, SCStreamDelegate {
     private var assetWriter: AVAssetWriter?
     private var audioInput: AVAssetWriterInput?
     private var sessionStarted = false
-    private let sampleQueue = DispatchQueue(label: "ru.sk.meetingapp.system-audio")
+    private let sampleQueue = DispatchQueue(label: "com.meetingapp.system-audio")
 
     func start() async -> URL? {
         lastErrorMessage = nil
