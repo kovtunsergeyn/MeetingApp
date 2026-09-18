@@ -1,0 +1,143 @@
+import AppKit
+import SwiftUI
+import UniformTypeIdentifiers
+
+// Значок в строке меню (справа вверху, рядом с часами) с быстрыми действиями:
+// запись встречи начинается в один клик, не разыскивая окно приложения.
+// Меню собирается заново при каждом открытии — состав пунктов зависит от того,
+// идёт ли сейчас запись.
+@MainActor
+final class StatusBarController: NSObject, NSMenuDelegate {
+    static let shared = StatusBarController()
+
+    private var statusItem: NSStatusItem?
+    private weak var store: JobStore?
+
+    func install(store: JobStore) {
+        guard statusItem == nil else { return }
+        self.store = store
+
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        item.button?.image = NSImage(
+            systemSymbolName: "waveform.circle",
+            accessibilityDescription: "Обработка встреч"
+        )
+        let menu = NSMenu()
+        menu.delegate = self
+        item.menu = menu
+        statusItem = item
+    }
+
+    // Пока идёт запись, значок красный — видно, что микрофон и экран слушают.
+    func refreshIcon() {
+        guard let button = statusItem?.button else { return }
+        let recording = store?.isMeetingRecordingActive ?? false
+        button.image = NSImage(
+            systemSymbolName: recording ? "record.circle" : "waveform.circle",
+            accessibilityDescription: "Обработка встреч"
+        )
+        button.contentTintColor = recording ? .systemRed : nil
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        guard let store else { return }
+        menu.removeAllItems()
+
+        if store.isMeetingRecordingActive {
+            let elapsed = store.meetingRecordingElapsedSeconds
+            let time = String(format: "%02d:%02d", elapsed / 60, elapsed % 60)
+            menu.addItem(disabledItem("Идёт запись встречи — \(time)"))
+            menu.addItem(actionItem("Остановить запись и обработать", #selector(stopRecording)))
+        } else {
+            menu.addItem(actionItem("Начать запись встречи", #selector(startRecording)))
+        }
+
+        menu.addItem(.separator())
+        menu.addItem(actionItem("Добавить видео или аудио…", #selector(addMedia)))
+        menu.addItem(actionItem("Добавить готовый транскрипт…", #selector(addTranscript)))
+
+        menu.addItem(.separator())
+        let running = store.jobs.filter { $0.stage.isRunning }
+        if let current = running.first {
+            menu.addItem(disabledItem("\(current.stage.title): \(current.name)"))
+        } else {
+            menu.addItem(disabledItem("Активных задач нет"))
+        }
+
+        menu.addItem(.separator())
+        menu.addItem(actionItem("Открыть приложение", #selector(openApp)))
+        menu.addItem(actionItem("Настройки…", #selector(openSettings)))
+        menu.addItem(.separator())
+        menu.addItem(actionItem("Завершить", #selector(quitApp)))
+
+        refreshIcon()
+    }
+
+    private func actionItem(_ title: String, _ selector: Selector) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: selector, keyEquivalent: "")
+        item.target = self
+        return item
+    }
+
+    private func disabledItem(_ title: String) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.isEnabled = false
+        return item
+    }
+
+    // MARK: - Действия
+
+    @objc private func startRecording() {
+        store?.startMeetingRecording()
+        refreshIcon()
+    }
+
+    @objc private func stopRecording() {
+        store?.stopMeetingRecording()
+        refreshIcon()
+    }
+
+    @objc private func addMedia() {
+        guard let store else { return }
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [.movie, .video, .audio, .mpeg4Movie, .quickTimeMovie]
+        NSApp.activate(ignoringOtherApps: true)
+        if panel.runModal() == .OK {
+            store.addFiles(panel.urls)
+            openApp()
+        }
+    }
+
+    @objc private func addTranscript() {
+        guard let store else { return }
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [.plainText]
+        NSApp.activate(ignoringOtherApps: true)
+        if panel.runModal() == .OK, let url = panel.url {
+            store.addTranscriptFile(url)
+            openApp()
+        }
+    }
+
+    @objc private func openApp() {
+        NSApp.activate(ignoringOtherApps: true)
+        for window in NSApp.windows where window.canBecomeMain {
+            window.makeKeyAndOrderFront(nil)
+            break
+        }
+    }
+
+    @objc private func openSettings() {
+        guard let store else { return }
+        store.showSettings = true
+        SettingsWindowController.shared.show(store: store)
+    }
+
+    @objc private func quitApp() {
+        NSApp.terminate(nil)
+    }
+}

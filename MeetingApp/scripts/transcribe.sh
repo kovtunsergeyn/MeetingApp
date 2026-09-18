@@ -11,10 +11,11 @@ set -e
 INPUT_FILE="$1"
 OUT_DIR="$2"
 LANGUAGE="${3:-auto}"
-MODEL="${4:-$HOME/whisper-models/ggml-medium.bin}"
+MODEL="${4:-$HOME/MeetingApp/models/ggml-medium.bin}"
 GLOSSARY="$5"
 MIC_FILE="$6"
-VAD_MODEL="$HOME/whisper-models/ggml-silero-v5.1.2.bin"
+# VAD-модель лежит рядом с основной моделью — папку задаёт приложение.
+VAD_MODEL="$(dirname "$MODEL")/ggml-silero-v5.1.2.bin"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 if [ -z "$INPUT_FILE" ] || [ -z "$OUT_DIR" ]; then

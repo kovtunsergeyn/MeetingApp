@@ -21,12 +21,18 @@ if [ "$BUILD_KIND" = "test" ]; then
   APP_NAME="MeetingApp-Test"
   BUNDLE_ID="ru.sk.meetingapp.test"
   DISPLAY_NAME="Обработка встреч (тест)"
-  DATA_FOLDER="Встречи-тест"
+  DATA_FOLDER="MeetingApp-Test"
+  LEGACY_DATA_FOLDER="Встречи-тест"
+  # Модели общие и принадлежат рабочей сборке — тестовая их не забирает,
+  # иначе проверка правок унесла бы гигабайты из-под рабочего приложения.
+  LEGACY_MODELS_FOLDER=""
 else
   APP_NAME="MeetingApp"
   BUNDLE_ID="ru.sk.meetingapp"
   DISPLAY_NAME="Обработка встреч"
-  DATA_FOLDER="Встречи"
+  DATA_FOLDER="MeetingApp"
+  LEGACY_DATA_FOLDER="Встречи"
+  LEGACY_MODELS_FOLDER="whisper-models"
 fi
 
 APP_BUNDLE="$APP_NAME.app"
@@ -121,6 +127,11 @@ cat > "$APP_BUNDLE/Contents/Info.plist" << EOF
          своя, чтобы проверки не трогали рабочую историю обработки. -->
     <key>MADataFolder</key>
     <string>$DATA_FOLDER</string>
+    <!-- Старая папка данных: при первом запуске её содержимое переезжает в новую. -->
+    <key>MALegacyDataFolder</key>
+    <string>$LEGACY_DATA_FOLDER</string>
+    <key>MALegacyModelsFolder</key>
+    <string>$LEGACY_MODELS_FOLDER</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundlePackageType</key>

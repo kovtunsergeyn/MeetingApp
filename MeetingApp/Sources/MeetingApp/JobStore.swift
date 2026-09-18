@@ -2,6 +2,7 @@ import Foundation
 import AppKit
 import CoreAudio
 import CoreGraphics
+import ServiceManagement
 
 @MainActor
 final class JobStore: ObservableObject {
@@ -243,7 +244,7 @@ final class JobStore: ObservableObject {
         appendLog("Свожу дорожки записи встречи…")
         let startDate = meetingRecordingStartDate ?? Date()
         let safeName = "Встреча " + DateFormatter.rowDate.string(from: startDate).replacingOccurrences(of: ":", with: "-")
-        let destDir = baseDir + "/tmp/" + safeName
+        let destDir = recordingsDir + "/" + safeName
         try? FileManager.default.createDirectory(atPath: destDir, withIntermediateDirectories: true)
         let mixedPath = destDir + "/meeting.m4a"
 
@@ -341,11 +342,26 @@ final class JobStore: ObservableObject {
     // у промышленной сборки это ~/Встречи, у тестовой — ~/Встречи-тест,
     // чтобы проверки правок не трогали рабочую историю обработки.
     static let dataFolderName: String =
-        (Bundle.main.object(forInfoDictionaryKey: "MADataFolder") as? String) ?? "Встречи"
+        (Bundle.main.object(forInfoDictionaryKey: "MADataFolder") as? String) ?? "MeetingApp"
 
+    // Имя старой папки данных — нужно только для разового переезда.
+    static let legacyDataFolderName: String =
+        (Bundle.main.object(forInfoDictionaryKey: "MALegacyDataFolder") as? String) ?? "Встречи"
+
+    // Старая папка моделей. У тестовой сборки пустая: модели общие и
+    // принадлежат рабочей сборке, забирать их проверка правок не должна.
+    static let legacyModelsFolderName: String =
+        (Bundle.main.object(forInfoDictionaryKey: "MALegacyModelsFolder") as? String) ?? "whisper-models"
+
+    // Всё, что создаёт приложение, лежит в одной папке с латинским именем:
+    // раньше данные были разбросаны (~/Встречи и ~/whisper-models), а кириллица
+    // в путях ломала часть консольных инструментов.
     private var baseDir: String { return NSHomeDirectory() + "/" + JobStore.dataFolderName }
     private var historyURL: URL { return URL(fileURLWithPath: baseDir + "/history.json") }
-    private var modelsDir: String { return NSHomeDirectory() + "/whisper-models" }
+    private var modelsDir: String { return baseDir + "/models" }
+    private var recordingsDir: String { return baseDir + "/recordings" }
+    private var transcriptsDir: String { return baseDir + "/transcripts" }
+    private var processedDir: String { return baseDir + "/processed" }
     private var modelPath: String { return modelsDir + "/" + selectedModel.fileName }
 
     // MARK: - Управление моделями whisper (скачать / удалить)
@@ -370,7 +386,7 @@ final class JobStore: ObservableObject {
             appendLog("Скачиваю модель \(option.fileName)…")
             let result = await runScript(
                 name: "install_dep.sh",
-                arguments: ["model", option.id, option.fileName, option.downloadURL],
+                arguments: ["model", option.id, option.fileName, option.downloadURL, modelsDir],
                 jobID: nil
             )
             if result.exitCode == 0 {
@@ -406,6 +422,7 @@ final class JobStore: ObservableObject {
     // MARK: - Инициализация
 
     init() {
+        migrateLegacyLayoutIfNeeded()
         createDirectories()
         loadHistory()
         normalizeStagesOnLaunch()
@@ -415,9 +432,101 @@ final class JobStore: ObservableObject {
 
     private func createDirectories() {
         let fm = FileManager.default
-        for path in [baseDir, baseDir + "/обработано", baseDir + "/транскрипты", baseDir + "/tmp"] {
+        for path in [baseDir, processedDir, transcriptsDir, recordingsDir, modelsDir] {
             try? fm.createDirectory(atPath: path, withIntermediateDirectories: true)
         }
+    }
+
+    // MARK: - Переезд со старой раскладки
+
+    // Раньше данные лежали в двух местах с кириллическими именами: ~/Встречи
+    // (история, транскрипты, записи) и ~/whisper-models (модели). Кириллица в
+    // путях подводит часть консольных инструментов, а разбросанные папки трудно
+    // найти и удалить. Теперь всё в одной папке с латинским именем; при первом
+    // запуске новой версии старая раскладка переезжает в неё автоматически.
+    private func migrateLegacyLayoutIfNeeded() {
+        let fm = FileManager.default
+        let home = NSHomeDirectory()
+        let legacyBase = home + "/" + JobStore.legacyDataFolderName
+        let legacyModels = JobStore.legacyModelsFolderName.isEmpty ? "" : home + "/" + JobStore.legacyModelsFolderName
+
+        let hasLegacyModels = !legacyModels.isEmpty && fm.fileExists(atPath: legacyModels)
+        guard fm.fileExists(atPath: legacyBase) || hasLegacyModels else { return }
+        // Если история уже на новом месте, переезд состоялся — второй раз не лезем.
+        guard !fm.fileExists(atPath: historyURL.path) else { return }
+
+        try? fm.createDirectory(atPath: baseDir, withIntermediateDirectories: true)
+
+        // Переносим содержимое по одному, а не папку целиком: новая папка к
+        // этому моменту уже существует (сборка кладёт в неё свежие скрипты).
+        // Старые имена подпапок заодно переводим на латиницу.
+        let renames = ["транскрипты": "transcripts", "обработано": "processed", "tmp": "recordings"]
+        var movedAnything = false
+
+        if let items = try? fm.contentsOfDirectory(atPath: legacyBase) {
+            for item in items {
+                let source = legacyBase + "/" + item
+                let destination = baseDir + "/" + (renames[item] ?? item)
+                // Скрипты в новой папке свежее — старые не тащим.
+                guard !fm.fileExists(atPath: destination) else { continue }
+                if (try? fm.moveItem(atPath: source, toPath: destination)) != nil {
+                    movedAnything = true
+                }
+            }
+            // Если старая папка опустела — убираем, чтобы не мозолила глаза.
+            if let left = try? fm.contentsOfDirectory(atPath: legacyBase), left.isEmpty {
+                try? fm.removeItem(atPath: legacyBase)
+            }
+        }
+
+        if hasLegacyModels {
+            try? fm.createDirectory(atPath: modelsDir, withIntermediateDirectories: true)
+            if let models = try? fm.contentsOfDirectory(atPath: legacyModels) {
+                for model in models where !fm.fileExists(atPath: modelsDir + "/" + model) {
+                    if (try? fm.moveItem(atPath: legacyModels + "/" + model, toPath: modelsDir + "/" + model)) != nil {
+                        movedAnything = true
+                    }
+                }
+            }
+            if let left = try? fm.contentsOfDirectory(atPath: legacyModels), left.isEmpty {
+                try? fm.removeItem(atPath: legacyModels)
+            }
+        }
+
+        rewriteHistoryPathsAfterMigration(legacyBase: legacyBase)
+
+        // Путь к скриптам мог быть сохранён в настройках вручную — чиним.
+        if scriptsDir.hasPrefix(legacyBase) {
+            scriptsDir = baseDir + "/scripts"
+        }
+
+        if movedAnything {
+            appendLog("Данные переехали в одну папку: \(baseDir).")
+        }
+    }
+
+    // В истории лежат абсолютные пути к исходникам и транскриптам — после
+    // переезда их нужно переписать, иначе задачи «потеряют» свои файлы.
+    private func rewriteHistoryPathsAfterMigration(legacyBase: String) {
+        let fm = FileManager.default
+        guard let data = fm.contents(atPath: historyURL.path),
+              var text = String(data: data, encoding: .utf8) else { return }
+
+        // Копия на случай, если что-то пойдёт не так: история — единственная
+        // запись о проделанной работе.
+        try? data.write(to: URL(fileURLWithPath: historyURL.path + ".before-migration"))
+
+        for (old, new) in [
+            (legacyBase + "/транскрипты", transcriptsDir),
+            (legacyBase + "/обработано", processedDir),
+            (legacyBase + "/tmp", recordingsDir),
+            (legacyBase, baseDir),
+            (JobStore.legacyModelsFolderName.isEmpty ? "\u{0}" : NSHomeDirectory() + "/" + JobStore.legacyModelsFolderName, modelsDir)
+        ] {
+            text = text.replacingOccurrences(of: old, with: new)
+        }
+
+        try? text.data(using: .utf8)?.write(to: historyURL)
     }
 
     // Если приложение закрыли в момент работы — помечаем такие задачи паузой.
@@ -580,7 +689,7 @@ final class JobStore: ObservableObject {
     // Добавляет запись, сделанную через микрофон, как обычную задачу.
     func addRecordedFile(_ url: URL) {
         let name = "Запись " + DateFormatter.rowDate.string(from: Date())
-        let destination = baseDir + "/tmp/" + name.replacingOccurrences(of: ":", with: "-") + "." + url.pathExtension
+        let destination = recordingsDir + "/" + name.replacingOccurrences(of: ":", with: "-") + "." + url.pathExtension
         try? FileManager.default.moveItem(atPath: url.path, toPath: destination)
         var job = Job(sourcePath: destination)
         job.name = name
@@ -594,7 +703,7 @@ final class JobStore: ObservableObject {
     // и сразу переходим к шагу саммари.
     func addTranscriptFile(_ url: URL) {
         let name = url.deletingPathExtension().lastPathComponent
-        let destDir = baseDir + "/транскрипты/" + name
+        let destDir = transcriptsDir + "/" + name
         try? FileManager.default.createDirectory(atPath: destDir, withIntermediateDirectories: true)
         let destPath = destDir + "/transcript.txt"
         do {
@@ -680,7 +789,7 @@ final class JobStore: ObservableObject {
 
     private func cleanupTempFiles(for job: Job) {
         let fm = FileManager.default
-        let tmpDir = baseDir + "/tmp/" + job.name
+        let tmpDir = recordingsDir + "/" + job.name
         try? fm.removeItem(atPath: tmpDir)
         if let transcriptPath = job.transcriptPath {
             try? fm.removeItem(atPath: URL(fileURLWithPath: transcriptPath).deletingLastPathComponent().path)
@@ -757,12 +866,15 @@ final class JobStore: ObservableObject {
                 let arguments: [String]
                 if id.hasPrefix("model:") {
                     let option = WhisperModelOption.byID(String(id.dropFirst("model:".count)))
-                    arguments = ["model", option.id, option.fileName, option.downloadURL]
+                    arguments = ["model", option.id, option.fileName, option.downloadURL, modelsDir]
+                } else if id == "vad" {
+                    arguments = ["vad", modelsDir]
                 } else {
                     arguments = [id]
                 }
                 let result = await runScript(name: "install_dep.sh", arguments: arguments, jobID: nil)
                 if result.exitCode == 0 {
+                    rememberInstalledComponent(id)
                     appendLog("Компонент \(id) установлен.")
                 } else {
                     appendLog("Не удалось установить \(id) (код \(result.exitCode)).")
@@ -966,7 +1078,7 @@ final class JobStore: ObservableObject {
             updateJob(jobID) { $0.stage = .downloading; $0.lastError = nil; $0.lastErrorDetail = nil }
             appendLog("── Загрузка с YouTube: \(youtubeURL)")
 
-            let outDir = baseDir + "/tmp/" + job.name
+            let outDir = recordingsDir + "/" + job.name
             startStageTimer(estimatedSeconds: nil)
             let result = await runScript(
                 name: "download_youtube.sh",
@@ -1007,7 +1119,7 @@ final class JobStore: ObservableObject {
             updateJob(jobID) { $0.stage = .transcribing; $0.lastError = nil; $0.lastErrorDetail = nil }
             appendLog("── Транскрибация: \(job.fileName)")
 
-            let outDir = baseDir + "/транскрипты/" + job.name
+            let outDir = transcriptsDir + "/" + job.name
             startStageTimer(estimatedSeconds: nil)
 
             // У записей встреч рядом со сведённым файлом лежат исходные дорожки:
@@ -1139,6 +1251,106 @@ final class JobStore: ObservableObject {
         return parts.isEmpty ? "без сохранения" : parts.joined(separator: " + ")
     }
 
+    // MARK: - Запуск при входе в систему
+
+    // Автозапуск нужен, чтобы приложение успело заметить начало встречи: если
+    // оно не запущено, предлагать запись некому.
+    @Published var launchAtLogin: Bool = SMAppService.mainApp.status == .enabled {
+        didSet {
+            guard launchAtLogin != (SMAppService.mainApp.status == .enabled) else { return }
+            do {
+                if launchAtLogin {
+                    try SMAppService.mainApp.register()
+                    appendLog("Приложение будет запускаться при входе в систему.")
+                } else {
+                    try SMAppService.mainApp.unregister()
+                    appendLog("Автозапуск при входе в систему отключён.")
+                }
+            } catch {
+                appendLog("Не удалось изменить автозапуск: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    // MARK: - Учёт установленных компонентов
+
+    // Помним, что приложение поставило само: при удалении предлагаем убрать
+    // только это. То, что стояло на компьютере до установки, не трогаем — им
+    // могут пользоваться другие программы.
+    private var installedComponentsURL: URL {
+        return URL(fileURLWithPath: baseDir + "/installed_components.json")
+    }
+
+    func installedComponentIDs() -> [String] {
+        guard let data = FileManager.default.contents(atPath: installedComponentsURL.path),
+              let ids = try? JSONDecoder().decode([String].self, from: data) else { return [] }
+        return ids
+    }
+
+    private func rememberInstalledComponent(_ id: String) {
+        var ids = installedComponentIDs()
+        guard !ids.contains(id) else { return }
+        ids.append(id)
+        guard let data = try? JSONEncoder().encode(ids) else { return }
+        try? data.write(to: installedComponentsURL)
+    }
+
+    // MARK: - Удаление приложения и его компонентов
+
+    @Published var showUninstallSheet: Bool = false
+    @Published var uninstallSelection: Set<String> = []
+    @Published var uninstallPreview: String = ""
+    @Published var isUninstalling: Bool = false
+
+    // Что вообще можно удалить: компоненты из списка установленных плюс данные,
+    // модели и само приложение.
+    func uninstallOptions() -> [(id: String, title: String)] {
+        var options: [(String, String)] = []
+        let titles = [
+            "ffmpeg": "ffmpeg (конвертация аудио и видео)",
+            "whisper": "whisper.cpp (распознавание речи)",
+            "ytdlp": "yt-dlp (загрузка с YouTube)",
+            "node": "Node.js",
+            "claude": "Claude Code (сбор саммари)"
+        ]
+        for id in installedComponentIDs() {
+            if let title = titles[id] { options.append((id, title)) }
+        }
+        options.append(("models:" + modelsDir, "Языковые модели whisper (\(modelsDir))"))
+        options.append(("data:" + baseDir, "Данные: записи, транскрипты, история (\(baseDir))"))
+        options.append(("app:" + Bundle.main.bundleURL.path, "Само приложение (\(Bundle.main.bundleURL.path))"))
+        return options
+    }
+
+    func prepareUninstall() {
+        // По умолчанию отмечаем только компоненты: данные и приложение — это
+        // отдельное решение, которое человек принимает осознанно.
+        uninstallSelection = Set(installedComponentIDs())
+        uninstallPreview = ""
+        showUninstallSheet = true
+    }
+
+    func runUninstall(apply: Bool) {
+        let selected = Array(uninstallSelection)
+        guard !selected.isEmpty else {
+            uninstallPreview = "Ничего не выбрано."
+            return
+        }
+        isUninstalling = true
+        Task {
+            let result = await runScript(
+                name: "uninstall.sh",
+                arguments: [apply ? "--apply" : "--dry-run"] + selected,
+                jobID: nil
+            )
+            isUninstalling = false
+            uninstallPreview = result.output
+            if apply {
+                appendLog("Удаление компонентов завершено (код \(result.exitCode)).")
+            }
+        }
+    }
+
     // MARK: - Раздельные дорожки записи встречи
 
     // Рядом со сведённым meeting.m4a запись встречи оставляет исходные дорожки:
@@ -1178,19 +1390,19 @@ final class JobStore: ObservableObject {
         // видела чужой файл — и задаче прописывался путь к записи другой встречи.
         let ext = URL(fileURLWithPath: job.sourcePath).pathExtension
         let base = job.name.replacingOccurrences(of: "/", with: "-")
-        var destination = baseDir + "/обработано/" + base + (ext.isEmpty ? "" : "." + ext)
+        var destination = processedDir + "/" + base + (ext.isEmpty ? "" : "." + ext)
         var counter = 2
         while fm.fileExists(atPath: destination) {
-            destination = baseDir + "/обработано/" + base + " (\(counter))" + (ext.isEmpty ? "" : "." + ext)
+            destination = processedDir + "/" + base + " (\(counter))" + (ext.isEmpty ? "" : "." + ext)
             counter += 1
         }
 
         do {
             try fm.moveItem(atPath: job.sourcePath, toPath: destination)
             updateJob(jobID) { $0.sourcePath = destination }
-            appendLog("Исходник перемещён в «обработано».")
+            appendLog("Исходник перемещён в папку processed.")
         } catch {
-            appendLog("Не удалось переместить исходник в «обработано»: \(error.localizedDescription)")
+            appendLog("Не удалось переместить исходник в папку processed: \(error.localizedDescription)")
         }
     }
 

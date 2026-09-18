@@ -957,26 +957,125 @@ struct SettingsSheet: View {
 
             Divider()
 
-            Button {
-                store.checkDependenciesAndPrompt()
-            } label: {
-                Label("Проверить компоненты", systemImage: "checkmark.seal")
+            Toggle(isOn: Binding(
+                get: { store.launchAtLogin },
+                set: { store.launchAtLogin = $0 }
+            )) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Запускать при входе в систему")
+                    Text("Нужно, чтобы приложение успевало заметить начало встречи и предложить запись.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            HStack {
+                Button {
+                    store.checkDependenciesAndPrompt()
+                } label: {
+                    Label("Проверить компоненты", systemImage: "checkmark.seal")
+                }
+                Spacer()
+                Button(role: .destructive) {
+                    store.prepareUninstall()
+                } label: {
+                    Label("Удалить приложение…", systemImage: "trash")
+                }
             }
 
             HStack {
                 Spacer()
-                Button("Готово") { store.showSettings = false }
-                    .keyboardShortcut(.defaultAction)
+                Button("Готово") {
+                    store.showSettings = false
+                    SettingsWindowController.shared.hide()
+                }
+                .keyboardShortcut(.defaultAction)
             }
         }
         .padding(24)
-        .frame(width: 520)
+        .frame(minWidth: 480)
         .sheet(isPresented: Binding<Bool>(
             get: { store.showGlossarySheet },
             set: { store.showGlossarySheet = $0 }
         )) {
             GlossarySheet(store: store)
         }
+        .sheet(isPresented: Binding<Bool>(
+            get: { store.showUninstallSheet },
+            set: { store.showUninstallSheet = $0 }
+        )) {
+            UninstallSheet(store: store)
+        }
+    }
+}
+
+// MARK: - Удаление приложения и его компонентов
+
+struct UninstallSheet: View {
+    @ObservedObject var store: JobStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Удаление приложения")
+                .font(.title3).bold()
+
+            Text("Отмечено то, что приложение установило само. Программы, которые уже были на компьютере до его установки, в списке не появятся — их могли поставить для других задач.")
+                .font(.callout)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(store.uninstallOptions(), id: \.id) { option in
+                        Toggle(isOn: Binding(
+                            get: { store.uninstallSelection.contains(option.id) },
+                            set: { isOn in
+                                if isOn { store.uninstallSelection.insert(option.id) }
+                                else { store.uninstallSelection.remove(option.id) }
+                            }
+                        )) {
+                            Text(option.title)
+                                .font(.callout)
+                        }
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+            .frame(maxHeight: 180)
+
+            if !store.uninstallPreview.isEmpty {
+                ScrollView {
+                    Text(store.uninstallPreview)
+                        .font(.system(.caption2, design: .monospaced))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                        .padding(8)
+                }
+                .frame(maxHeight: 160)
+                .background(Color(nsColor: .textBackgroundColor))
+                .cornerRadius(6)
+            }
+
+            HStack {
+                Button("Проверить без удаления") { store.runUninstall(apply: false) }
+                    .disabled(store.isUninstalling)
+                Spacer()
+                Button("Закрыть") { store.showUninstallSheet = false }
+                Button(role: .destructive) {
+                    store.runUninstall(apply: true)
+                } label: {
+                    Text("Удалить отмеченное")
+                }
+                .disabled(store.isUninstalling || store.uninstallPreview.isEmpty)
+            }
+
+            Text("Кнопка удаления включается после проверки: сначала видно точный список, потом действие.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+        .padding(24)
+        .frame(width: 560)
     }
 }
 
@@ -1041,6 +1140,7 @@ struct ContentView: View {
             }
             Button {
                 store.showSettings = true
+                SettingsWindowController.shared.show(store: store)
             } label: {
                 Image(systemName: "gearshape")
             }
@@ -1053,10 +1153,6 @@ struct ContentView: View {
         let tabBinding = Binding<Int>(
             get: { store.selectedTab },
             set: { newValue in store.selectedTab = newValue }
-        )
-        let settingsBinding = Binding<Bool>(
-            get: { store.showSettings },
-            set: { newValue in store.showSettings = newValue }
         )
         let depsBinding = Binding<Bool>(
             get: { store.showDependencySheet },
@@ -1089,9 +1185,7 @@ struct ContentView: View {
             .padding(.top, 8)
         }
         .frame(minWidth: 680, minHeight: 620)
-        .sheet(isPresented: settingsBinding) {
-            SettingsSheet(store: store)
-        }
+        .onAppear { StatusBarController.shared.install(store: store) }
         .sheet(isPresented: depsBinding) {
             DependencySheet(store: store)
         }

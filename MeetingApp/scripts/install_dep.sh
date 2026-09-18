@@ -4,7 +4,8 @@
 #   ./install_dep.sh ffmpeg
 #   ./install_dep.sh whisper
 #   ./install_dep.sh ytdlp
-#   ./install_dep.sh model <modelID> <fileName> <downloadURL>
+#   ./install_dep.sh vad <папка моделей>
+#   ./install_dep.sh model <modelID> <fileName> <downloadURL> <папка моделей>
 set -e
 
 COMPONENT="$1"
@@ -39,7 +40,8 @@ case "$COMPONENT" in
     ;;
 
   vad)
-    MODELS_DIR="$HOME/whisper-models"
+    # Папку моделей передаёт приложение: она внутри его папки данных.
+    MODELS_DIR="${2:-$HOME/MeetingApp/models}"
     mkdir -p "$MODELS_DIR"
     echo "Скачиваю детектор речи (VAD)…"
     curl -L --fail --progress-bar \
@@ -66,11 +68,11 @@ case "$COMPONENT" in
     MODEL_ID="$2"
     FILE_NAME="$3"
     DOWNLOAD_URL="$4"
+    MODELS_DIR="${5:-$HOME/MeetingApp/models}"
     if [ -z "$FILE_NAME" ] || [ -z "$DOWNLOAD_URL" ]; then
-      echo "Использование: ./install_dep.sh model <modelID> <fileName> <downloadURL>"
+      echo "Использование: ./install_dep.sh model <modelID> <fileName> <downloadURL> [папка моделей]"
       exit 1
     fi
-    MODELS_DIR="$HOME/whisper-models"
     mkdir -p "$MODELS_DIR"
     echo "Скачиваю модель $FILE_NAME (id: $MODEL_ID)…"
     curl -L --fail --progress-bar \
