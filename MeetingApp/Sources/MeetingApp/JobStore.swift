@@ -984,24 +984,42 @@ final class JobStore: ObservableObject {
             process.terminate()
         }
 
+        removeMetaFile(for: job)
         cleanupTempFiles(for: job)
         jobs.removeAll { $0.id == jobID }
+        if selectedJobID == jobID { selectedJobID = nil }
         saveHistory()
         appendLog("Остановлено и очищено: \(job.name)")
     }
 
     private func cleanupTempFiles(for job: Job) {
         let fm = FileManager.default
-        let tmpDir = recordingsDir + "/" + job.name
-        try? fm.removeItem(atPath: tmpDir)
+        try? fm.removeItem(atPath: recordingsDir + "/" + job.name)
         if let transcriptPath = job.transcriptPath {
             try? fm.removeItem(atPath: URL(fileURLWithPath: transcriptPath).deletingLastPathComponent().path)
         }
+        // Сведённая запись лежит отдельно от текста: без этого после удаления
+        // задачи аудио оставалось на диске мусором.
+        if !job.sourcePath.isEmpty, job.sourcePath.hasPrefix(processedDir + "/") {
+            try? fm.removeItem(atPath: job.sourcePath)
+        }
     }
 
+    // Удаление из истории. Обязательно убирает и запись задачи в её папке:
+    // иначе восстановление по папкам при следующем запуске возвращало всё
+    // удалённое обратно — удаление выглядело неработающим.
     func removeJob(jobID: UUID) {
+        guard let job = jobs.first(where: { $0.id == jobID }) else { return }
+        removeMetaFile(for: job)
         jobs.removeAll { $0.id == jobID }
+        if selectedJobID == jobID { selectedJobID = nil }
         saveHistory()
+        appendLog("Удалено из истории: \(job.name)")
+    }
+
+    private func removeMetaFile(for job: Job) {
+        guard let folder = JobFolder.folder(for: job) else { return }
+        try? FileManager.default.removeItem(atPath: JobFolder.metaPath(inFolder: folder))
     }
 
     // MARK: - Зависимости
@@ -1966,10 +1984,8 @@ final class JobStore: ObservableObject {
         return JobStore.sortedForDisplay(jobs.filter { $0.isMeetingRecording })
     }
 
-    // Порядок в списках: просто по времени, свежее — выше. Статус на порядок
-    // не влияет: искать задачу глазами проще по времени, чем по стадии.
     static func sortedForDisplay(_ jobs: [Job]) -> [Job] {
-        return jobs.sorted { $0.updatedAt > $1.updatedAt }
+        return JobOrder.sortedForDisplay(jobs)
     }
 }
 

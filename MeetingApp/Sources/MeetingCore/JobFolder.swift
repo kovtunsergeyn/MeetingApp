@@ -123,3 +123,26 @@ public enum JobRename {
         return newFolder + String(path.dropFirst(oldFolder.count))
     }
 }
+
+// MARK: - Порядок задач и формат времени
+
+// Обе мелочи живут в ядре, потому что на них уже наступали: сортировка по
+// времени изменения поднимала наверх старую встречу после переименования, а
+// нечисловая длительность записи роняла ползунок проигрывателя.
+public enum JobOrder {
+    // По времени самой встречи, свежее — выше. Статус и последующие правки
+    // на порядок не влияют.
+    public static func sortedForDisplay(_ jobs: [Job]) -> [Job] {
+        return jobs.sorted { $0.createdAt > $1.createdAt }
+    }
+}
+
+public enum TimeFormat {
+    // Минуты и секунды. Некорректная длительность (ноль, отрицательная,
+    // нечисловая) превращается в нули, а не в мусор на экране.
+    public static func mmss(_ seconds: Double) -> String {
+        guard seconds.isFinite, seconds > 0 else { return "00:00" }
+        let total = Int(seconds.rounded())
+        return String(format: "%02d:%02d", total / 60, total % 60)
+    }
+}

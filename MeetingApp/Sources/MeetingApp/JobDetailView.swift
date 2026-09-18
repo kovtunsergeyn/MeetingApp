@@ -87,7 +87,7 @@ struct JobDetailView: View {
                     .foregroundStyle(color(for: job.stage))
                 Text("·")
                     .foregroundStyle(.secondary)
-                Text(DateFormatter.rowDate.string(from: job.updatedAt))
+                Text(DateFormatter.rowDate.string(from: job.createdAt))
                     .foregroundStyle(.secondary)
                 if job.isMeetingRecording {
                     Text("·").foregroundStyle(.secondary)

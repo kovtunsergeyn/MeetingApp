@@ -225,7 +225,10 @@ struct JobRowView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer(minLength: 8)
-                Text(DateFormatter.rowDate.string(from: job.updatedAt))
+                // Показываем время самой встречи, а не последнего изменения
+                // задачи: переименование сдвигало дату, и запись «уезжала»
+                // во времени.
+                Text(DateFormatter.rowDate.string(from: job.createdAt))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize()

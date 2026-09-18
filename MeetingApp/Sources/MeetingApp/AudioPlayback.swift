@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import MeetingCore
 
 // Небольшой проигрыватель записи встречи. Нужен, чтобы проверить спорное место
 // в расшифровке, не разыскивая файл в Finder и не открывая ради него отдельное
@@ -100,8 +101,6 @@ final class AudioPlayback: NSObject, ObservableObject, AVAudioPlayerDelegate {
     }
 
     static func timeText(_ seconds: Double) -> String {
-        guard seconds.isFinite, seconds >= 0 else { return "00:00" }
-        let total = Int(seconds.rounded())
-        return String(format: "%02d:%02d", total / 60, total % 60)
+        return TimeFormat.mmss(seconds)
     }
 }
