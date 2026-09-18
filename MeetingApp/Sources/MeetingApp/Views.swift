@@ -346,49 +346,6 @@ struct JobRowView: View {
     }
 }
 
-// MARK: - Вкладка «Обработка»
-
-struct QueueTabView: View {
-    @ObservedObject var store: JobStore
-
-    private var activeJobs: [Job] {
-        return store.jobs.filter { $0.stage != .done }.sorted { $0.createdAt < $1.createdAt }
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            DropZoneView(store: store)
-            YouTubeInputView(store: store)
-            HStack(spacing: 10) {
-                MicrophoneRecorderView(store: store)
-                AttachTranscriptView(store: store)
-            }
-
-            if activeJobs.isEmpty {
-                Text("Активных задач нет.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            } else {
-                Text("В работе")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-                List(activeJobs) { job in
-                    JobRowView(store: store, job: job)
-                }
-                .frame(minHeight: 130, maxHeight: 210)
-                .listStyle(.inset)
-            }
-
-            if store.currentJobID != nil {
-                StageProgressView(store: store)
-            }
-
-            LogPanelView(store: store)
-        }
-        .padding(16)
-    }
-}
-
 // MARK: - Прикрепить готовый транскрипт
 
 struct AttachTranscriptView: View {
@@ -430,10 +387,14 @@ struct StageProgressView: View {
     }
 }
 
-// MARK: - Вкладка «История»
+// MARK: - Вкладка «Обработка»
 
-struct HistoryTabView: View {
+struct QueueTabView: View {
     @ObservedObject var store: JobStore
+
+    private var activeJobs: [Job] {
+        return store.jobs.filter { $0.stage != .done }.sorted { $0.createdAt < $1.createdAt }
+    }
 
     private var elapsedText: String {
         let minutes = store.meetingRecordingElapsedSeconds / 60
@@ -441,9 +402,134 @@ struct HistoryTabView: View {
         return String(format: "%02d:%02d", minutes, seconds)
     }
 
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            // Всё, с чего начинается работа, собрано на одной вкладке: запись
+            // идущей встречи — такой же способ добавить материал, как файл или
+            // ссылка, и разносить их по разным вкладкам незачем.
+            SectionBox(title: "Запись встречи", systemImage: "video.fill") {
+                meetingRecordingBlock
+            }
+
+            SectionBox(title: "Добавить файл или ссылку", systemImage: "tray.and.arrow.down") {
+                VStack(alignment: .leading, spacing: 10) {
+                    DropZoneView(store: store)
+                    YouTubeInputView(store: store)
+                    HStack(spacing: 10) {
+                        MicrophoneRecorderView(store: store)
+                        AttachTranscriptView(store: store)
+                    }
+                }
+            }
+
+            SectionBox(title: "В работе", systemImage: "gearshape.2") {
+                VStack(alignment: .leading, spacing: 8) {
+                    if activeJobs.isEmpty {
+                        Text("Активных задач нет.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    } else {
+                        List(activeJobs) { job in
+                            JobRowView(store: store, job: job)
+                        }
+                        .frame(minHeight: 120, maxHeight: 200)
+                        .listStyle(.inset)
+                    }
+
+                    if store.currentJobID != nil {
+                        StageProgressView(store: store)
+                    }
+                }
+            }
+
+            LogPanelView(store: store)
+        }
+        .padding(16)
+        .alert("Не удалось начать запись", isPresented: Binding(
+            get: { store.meetingRecordingPermissionIssue },
+            set: { store.meetingRecordingPermissionIssue = $0 }
+        )) {
+            if store.systemAudioRecorder.needsRestartForPermission {
+                Button("Открыть настройки") { store.openScreenRecordingSettings() }
+                Button("Перезапустить приложение") { store.restartApp() }
+            }
+            Button("Ок", role: .cancel) {}
+        } message: {
+            Text(store.systemAudioRecorder.lastErrorMessage ?? "Причина неизвестна.")
+        }
+    }
+
+    private var meetingRecordingBlock: some View {
+        Group {
+            if store.isMeetingRecordingActive {
+                HStack(spacing: 10) {
+                    Circle().fill(Color.red).frame(width: 8, height: 8)
+                    Text("Идёт запись… \(elapsedText)")
+                        .font(.headline)
+                    Spacer()
+                    Button("Остановить и обработать") {
+                        store.stopMeetingRecording()
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 10) {
+                        MicrophonePickerView(store: store)
+                        Spacer()
+                        Button {
+                            store.startMeetingRecording()
+                        } label: {
+                            Label("Записать встречу", systemImage: "record.circle")
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                    Toggle(isOn: Binding(
+                        get: { store.meetingDetectionEnabled },
+                        set: { store.meetingDetectionEnabled = $0 }
+                    )) {
+                        Text("Предлагать запись, когда начинается встреча в браузере или календаре")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Блок с заголовком
+
+// Рамка с подписью: на вкладке несколько разных дел подряд, и без границ
+// они сливаются в одну простыню.
+struct SectionBox<Content: View>: View {
+    let title: String
+    let systemImage: String
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(title, systemImage: systemImage)
+                .font(.subheadline.weight(.medium))
+                .foregroundColor(.secondary)
+            content
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+        .cornerRadius(10)
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.secondary.opacity(0.15)))
+    }
+}
+
+// MARK: - Вкладка «История»
+
+struct HistoryTabView: View {
+    @ObservedObject var store: JobStore
+
     // Записи встреч и загруженные файлы проходят один и тот же путь, поэтому
     // живут в одном списке: отдельная вкладка только заставляла искать задачу
-    // в двух местах. Разделить их по-прежнему можно фильтром.
+    // в двух местах. Отделить их по-прежнему можно фильтром.
     private var stageOptions: [(String, String)] {
         var options: [(String, String)] = [("all", "Все"), ("meetings", "Только записи встреч")]
         for stage in JobStage.allCases {
@@ -473,8 +559,6 @@ struct HistoryTabView: View {
         )
 
         return VStack(alignment: .leading, spacing: 12) {
-            recordingBar
-
             HStack {
                 Image(systemName: "magnifyingglass")
                     .foregroundColor(.secondary)
@@ -512,63 +596,6 @@ struct HistoryTabView: View {
                 .foregroundColor(.secondary)
         }
         .padding(16)
-        .alert("Не удалось начать запись", isPresented: Binding(
-            get: { store.meetingRecordingPermissionIssue },
-            set: { store.meetingRecordingPermissionIssue = $0 }
-        )) {
-            if store.systemAudioRecorder.needsRestartForPermission {
-                Button("Открыть настройки") { store.openScreenRecordingSettings() }
-                Button("Перезапустить приложение") { store.restartApp() }
-            }
-            Button("Ок", role: .cancel) {}
-        } message: {
-            Text(store.systemAudioRecorder.lastErrorMessage ?? "Причина неизвестна.")
-        }
-        .alert("Нет доступа к микрофону", isPresented: Binding(
-            get: { store.audioRecorder.permissionDenied },
-            set: { store.audioRecorder.permissionDenied = $0 }
-        )) {
-            Button("Ок", role: .cancel) {}
-        } message: {
-            Text("Разреши доступ к микрофону в Настройках системы → Конфиденциальность и безопасность → Микрофон.")
-        }
-    }
-
-    // Строка управления записью встречи — над списком, чтобы начать запись
-    // можно было там же, где смотришь прошлые.
-    private var recordingBar: some View {
-        Group {
-            if store.isMeetingRecordingActive {
-                HStack(spacing: 10) {
-                    Circle().fill(Color.red).frame(width: 8, height: 8)
-                    Text("Идёт запись встречи… \(elapsedText)")
-                        .font(.headline)
-                    Spacer()
-                    Button("Остановить запись") {
-                        store.stopMeetingRecording()
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
-                .padding(12)
-                .background(Color.red.opacity(0.08))
-                .cornerRadius(10)
-            } else {
-                HStack(spacing: 10) {
-                    Toggle(isOn: Binding(
-                        get: { store.meetingDetectionEnabled },
-                        set: { store.meetingDetectionEnabled = $0 }
-                    )) {
-                        Text("Предлагать запись при входе на встречу")
-                            .font(.callout)
-                    }
-                    Spacer()
-                    MicrophonePickerView(store: store)
-                    Button("Записать встречу") {
-                        store.startMeetingRecording()
-                    }
-                }
-            }
-        }
     }
 }
 
@@ -1150,7 +1177,7 @@ struct ContentView: View {
                     .tag(0)
 
                 HistoryTabView(store: store)
-                    .tabItem { Label("История и встречи", systemImage: "clock.arrow.circlepath") }
+                    .tabItem { Label("История", systemImage: "clock.arrow.circlepath") }
                     .tag(1)
             }
             .padding(.top, 8)

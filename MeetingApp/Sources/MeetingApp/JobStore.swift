@@ -260,6 +260,11 @@ final class JobStore: ObservableObject {
         if let micURL {
             try? fm.removeItem(atPath: destDir + "/" + MeetingTracks.micTrackName)
             try? fm.moveItem(at: micURL, to: URL(fileURLWithPath: destDir + "/" + MeetingTracks.micTrackName))
+        } else {
+            // Без дорожки микрофона встреча запишется «в одну сторону»: будут
+            // слышны собеседники, но не свой голос. Обычно это неразрешённый
+            // доступ к микрофону.
+            appendLog("Микрофон не записался — проверь разрешение на микрофон в системных настройках.")
         }
 
         guard result.exitCode == 0, FileManager.default.fileExists(atPath: mixedPath) else {
@@ -1043,12 +1048,16 @@ final class JobStore: ObservableObject {
             }
 
             if result.exitCode != 0 {
+                // Код 3 — особый случай: файл распознан, но речи в нём нет.
+                let message = result.exitCode == 3
+                    ? "В записи не нашлось речи. Проверь, что микрофону выдано разрешение и выбран нужный вход."
+                    : "Ошибка транскрибации (код \(result.exitCode))"
                 updateJob(jobID) {
                     $0.stage = .failed
-                    $0.lastError = "Ошибка транскрибации (код \(result.exitCode))"
+                    $0.lastError = message
                     $0.lastErrorDetail = errorDetail(from: result.output)
                 }
-                appendLog("Ошибка транскрибации: \(job.fileName)")
+                appendLog("\(message): \(job.fileName)")
                 return
             }
 
