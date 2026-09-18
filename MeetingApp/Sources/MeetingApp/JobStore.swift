@@ -3,6 +3,7 @@ import AppKit
 import CoreAudio
 import CoreGraphics
 import ServiceManagement
+import MeetingCore
 
 @MainActor
 final class JobStore: ObservableObject {
@@ -259,11 +260,11 @@ final class JobStore: ObservableObject {
         // накладывается друг на друга и видно, кто говорит. Удалим их сразу
         // после успешной транскрибации.
         let fm = FileManager.default
-        try? fm.removeItem(atPath: destDir + "/system.m4a")
-        try? fm.moveItem(at: systemURL, to: URL(fileURLWithPath: destDir + "/system.m4a"))
+        try? fm.removeItem(atPath: destDir + "/" + MeetingTracks.systemTrackName)
+        try? fm.moveItem(at: systemURL, to: URL(fileURLWithPath: destDir + "/" + MeetingTracks.systemTrackName))
         if let micURL {
-            try? fm.removeItem(atPath: destDir + "/mic.m4a")
-            try? fm.moveItem(at: micURL, to: URL(fileURLWithPath: destDir + "/mic.m4a"))
+            try? fm.removeItem(atPath: destDir + "/" + MeetingTracks.micTrackName)
+            try? fm.moveItem(at: micURL, to: URL(fileURLWithPath: destDir + "/" + MeetingTracks.micTrackName))
         }
 
         guard result.exitCode == 0, FileManager.default.fileExists(atPath: mixedPath) else {
@@ -356,12 +357,15 @@ final class JobStore: ObservableObject {
     // Всё, что создаёт приложение, лежит в одной папке с латинским именем:
     // раньше данные были разбросаны (~/Встречи и ~/whisper-models), а кириллица
     // в путях ломала часть консольных инструментов.
-    private var baseDir: String { return NSHomeDirectory() + "/" + JobStore.dataFolderName }
-    private var historyURL: URL { return URL(fileURLWithPath: baseDir + "/history.json") }
-    private var modelsDir: String { return baseDir + "/models" }
-    private var recordingsDir: String { return baseDir + "/recordings" }
-    private var transcriptsDir: String { return baseDir + "/transcripts" }
-    private var processedDir: String { return baseDir + "/processed" }
+    // Раскладка папок и переезд со старой живут в ядре — там их проверяют тесты.
+    private let layout = AppLayout(homeDirectory: NSHomeDirectory(), folderName: JobStore.dataFolderName)
+
+    private var baseDir: String { return layout.baseDir }
+    private var historyURL: URL { return URL(fileURLWithPath: layout.historyPath) }
+    private var modelsDir: String { return layout.modelsDir }
+    private var recordingsDir: String { return layout.recordingsDir }
+    private var transcriptsDir: String { return layout.transcriptsDir }
+    private var processedDir: String { return layout.processedDir }
     private var modelPath: String { return modelsDir + "/" + selectedModel.fileName }
 
     // MARK: - Управление моделями whisper (скачать / удалить)
@@ -431,10 +435,7 @@ final class JobStore: ObservableObject {
     }
 
     private func createDirectories() {
-        let fm = FileManager.default
-        for path in [baseDir, processedDir, transcriptsDir, recordingsDir, modelsDir] {
-            try? fm.createDirectory(atPath: path, withIntermediateDirectories: true)
-        }
+        layout.createDirectories()
     }
 
     // MARK: - Переезд со старой раскладки
@@ -445,88 +446,19 @@ final class JobStore: ObservableObject {
     // найти и удалить. Теперь всё в одной папке с латинским именем; при первом
     // запуске новой версии старая раскладка переезжает в неё автоматически.
     private func migrateLegacyLayoutIfNeeded() {
-        let fm = FileManager.default
-        let home = NSHomeDirectory()
-        let legacyBase = home + "/" + JobStore.legacyDataFolderName
-        let legacyModels = JobStore.legacyModelsFolderName.isEmpty ? "" : home + "/" + JobStore.legacyModelsFolderName
-
-        let hasLegacyModels = !legacyModels.isEmpty && fm.fileExists(atPath: legacyModels)
-        guard fm.fileExists(atPath: legacyBase) || hasLegacyModels else { return }
-        // Если история уже на новом месте, переезд состоялся — второй раз не лезем.
-        guard !fm.fileExists(atPath: historyURL.path) else { return }
-
-        try? fm.createDirectory(atPath: baseDir, withIntermediateDirectories: true)
-
-        // Переносим содержимое по одному, а не папку целиком: новая папка к
-        // этому моменту уже существует (сборка кладёт в неё свежие скрипты).
-        // Старые имена подпапок заодно переводим на латиницу.
-        let renames = ["транскрипты": "transcripts", "обработано": "processed", "tmp": "recordings"]
-        var movedAnything = false
-
-        if let items = try? fm.contentsOfDirectory(atPath: legacyBase) {
-            for item in items {
-                let source = legacyBase + "/" + item
-                let destination = baseDir + "/" + (renames[item] ?? item)
-                // Скрипты в новой папке свежее — старые не тащим.
-                guard !fm.fileExists(atPath: destination) else { continue }
-                if (try? fm.moveItem(atPath: source, toPath: destination)) != nil {
-                    movedAnything = true
-                }
-            }
-            // Если старая папка опустела — убираем, чтобы не мозолила глаза.
-            if let left = try? fm.contentsOfDirectory(atPath: legacyBase), left.isEmpty {
-                try? fm.removeItem(atPath: legacyBase)
-            }
-        }
-
-        if hasLegacyModels {
-            try? fm.createDirectory(atPath: modelsDir, withIntermediateDirectories: true)
-            if let models = try? fm.contentsOfDirectory(atPath: legacyModels) {
-                for model in models where !fm.fileExists(atPath: modelsDir + "/" + model) {
-                    if (try? fm.moveItem(atPath: legacyModels + "/" + model, toPath: modelsDir + "/" + model)) != nil {
-                        movedAnything = true
-                    }
-                }
-            }
-            if let left = try? fm.contentsOfDirectory(atPath: legacyModels), left.isEmpty {
-                try? fm.removeItem(atPath: legacyModels)
-            }
-        }
-
-        rewriteHistoryPathsAfterMigration(legacyBase: legacyBase)
+        let report = LayoutMigration.run(
+            homeDirectory: NSHomeDirectory(),
+            layout: layout,
+            legacyFolderName: JobStore.legacyDataFolderName,
+            legacyModelsFolderName: JobStore.legacyModelsFolderName
+        )
+        guard report.didSomething else { return }
+        appendLog("Данные переехали в одну папку: \(baseDir).")
 
         // Путь к скриптам мог быть сохранён в настройках вручную — чиним.
-        if scriptsDir.hasPrefix(legacyBase) {
-            scriptsDir = baseDir + "/scripts"
+        if scriptsDir.hasPrefix(NSHomeDirectory() + "/" + JobStore.legacyDataFolderName) {
+            scriptsDir = layout.scriptsDir
         }
-
-        if movedAnything {
-            appendLog("Данные переехали в одну папку: \(baseDir).")
-        }
-    }
-
-    // В истории лежат абсолютные пути к исходникам и транскриптам — после
-    // переезда их нужно переписать, иначе задачи «потеряют» свои файлы.
-    private func rewriteHistoryPathsAfterMigration(legacyBase: String) {
-        let fm = FileManager.default
-        guard let data = fm.contents(atPath: historyURL.path),
-              var text = String(data: data, encoding: .utf8) else { return }
-
-        // Копия на случай, если что-то пойдёт не так: история — единственная
-        // запись о проделанной работе.
-        try? data.write(to: URL(fileURLWithPath: historyURL.path + ".before-migration"))
-
-        for (old, new) in [
-            (legacyBase + "/транскрипты", transcriptsDir),
-            (legacyBase + "/обработано", processedDir),
-            (legacyBase + "/tmp", recordingsDir),
-            (legacyBase, baseDir),
-            (JobStore.legacyModelsFolderName.isEmpty ? "\u{0}" : NSHomeDirectory() + "/" + JobStore.legacyModelsFolderName, modelsDir)
-        ] {
-            text = text.replacingOccurrences(of: old, with: new)
-        }
-
-        try? text.data(using: .utf8)?.write(to: historyURL)
     }
 
     // Если приложение закрыли в момент работы — помечаем такие задачи паузой.
@@ -655,14 +587,8 @@ final class JobStore: ObservableObject {
 
     // Парсинг строки "DURATION_SECONDS:123.4", которую печатает transcribe.sh.
     private func parseTranscribeDuration(_ chunk: String) {
-        for line in chunk.components(separatedBy: .newlines) {
-            guard line.hasPrefix("DURATION_SECONDS:") else { continue }
-            let value = line.replacingOccurrences(of: "DURATION_SECONDS:", with: "")
-                .trimmingCharacters(in: .whitespaces)
-            guard let duration = Double(value), duration > 0 else { continue }
-            let estimated = duration * selectedModel.realtimeFactor
-            stageEstimatedSeconds = max(estimated, 5)
-        }
+        guard let duration = OutputParsing.durationSeconds(in: chunk) else { return }
+        stageEstimatedSeconds = max(duration * selectedModel.realtimeFactor, 5)
     }
 
     // MARK: - Добавление файлов
@@ -1126,18 +1052,18 @@ final class JobStore: ObservableObject {
             // системный звук (собеседники) и микрофон (я). Если они на месте —
             // распознаём их по отдельности и сшиваем в диалог с подписями.
             let tracks = separateTracks(for: job)
-            if tracks.mic != nil {
+            if tracks.micPath != nil {
                 appendLog("Распознаю дорожки раздельно — в транскрипте будет видно, кто говорит.")
             }
             let result = await runScript(
                 name: "transcribe.sh",
                 arguments: [
-                    tracks.main,
+                    tracks.mainPath,
                     outDir,
                     languageID,
                     modelPath,
                     glossary,
-                    tracks.mic ?? ""
+                    tracks.micPath ?? ""
                 ],
                 jobID: jobID,
                 onOutputLine: { [weak self] chunk in self?.parseTranscribeDuration(chunk) }
@@ -1233,15 +1159,7 @@ final class JobStore: ObservableObject {
     // Полный вывод шага для показа в развёрнутых подробностях ошибки.
     // Обрезаем середину длинного лога — начало и конец обычно самые информативные.
     private func errorDetail(from output: String) -> String? {
-        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-
-        let limit = 4000
-        guard trimmed.count > limit else { return trimmed }
-
-        let head = String(trimmed.prefix(limit / 2))
-        let tail = String(trimmed.suffix(limit / 2))
-        return head + "\n\n… (пропущено) …\n\n" + tail
+        return OutputParsing.errorDetail(from: output)
     }
 
     private func destinationsLabel(_ destinations: SaveDestinations) -> String {
@@ -1356,16 +1274,8 @@ final class JobStore: ObservableObject {
     // Рядом со сведённым meeting.m4a запись встречи оставляет исходные дорожки:
     // system.m4a — голоса собеседников, mic.m4a — свой голос. Распознавание по
     // отдельности даёт разметку «кто говорит» и не портит речь наложением.
-    private func separateTracks(for job: Job) -> (main: String, mic: String?) {
-        guard job.isMeetingRecording else { return (job.sourcePath, nil) }
-        let fm = FileManager.default
-        let dir = URL(fileURLWithPath: job.sourcePath).deletingLastPathComponent().path
-        let systemPath = dir + "/system.m4a"
-        let micPath = dir + "/mic.m4a"
-        guard fm.fileExists(atPath: systemPath), fm.fileExists(atPath: micPath) else {
-            return (job.sourcePath, nil)
-        }
-        return (systemPath, micPath)
+    private func separateTracks(for job: Job) -> MeetingTracks.Selection {
+        return MeetingTracks.select(sourcePath: job.sourcePath, isMeetingRecording: job.isMeetingRecording)
     }
 
     // После удачного распознавания отдельные дорожки не нужны: остаётся
@@ -1374,7 +1284,7 @@ final class JobStore: ObservableObject {
         guard job.isMeetingRecording else { return }
         let dir = URL(fileURLWithPath: job.sourcePath).deletingLastPathComponent().path
         let fm = FileManager.default
-        for name in ["system.m4a", "mic.m4a"] where fm.fileExists(atPath: dir + "/" + name) {
+        for name in [MeetingTracks.systemTrackName, MeetingTracks.micTrackName] where fm.fileExists(atPath: dir + "/" + name) {
             try? fm.removeItem(atPath: dir + "/" + name)
         }
     }
@@ -1407,26 +1317,11 @@ final class JobStore: ObservableObject {
     }
 
     private func extractNotionURL(from output: String) -> String? {
-        for rawLine in output.components(separatedBy: .newlines) {
-            for token in rawLine.components(separatedBy: .whitespaces) {
-                let clean = token.trimmingCharacters(in: CharacterSet(charactersIn: "<>\"'(),"))
-                if clean.hasPrefix("http") && clean.contains("notion") {
-                    return clean
-                }
-            }
-        }
-        return nil
+        return OutputParsing.notionURL(in: output)
     }
 
     private func extractDownloadedTitle(from output: String) -> String? {
-        for rawLine in output.components(separatedBy: .newlines) {
-            if rawLine.hasPrefix("TITLE:") {
-                let title = rawLine.replacingOccurrences(of: "TITLE:", with: "")
-                    .trimmingCharacters(in: .whitespaces)
-                return title.isEmpty ? nil : title
-            }
-        }
-        return nil
+        return OutputParsing.downloadedTitle(in: output)
     }
 
     private func updateJob(_ jobID: UUID, _ change: (inout Job) -> Void) {

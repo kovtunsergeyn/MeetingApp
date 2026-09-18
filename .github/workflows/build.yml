@@ -2,7 +2,7 @@ name: Build
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, dev ]
   pull_request:
     branches: [ main ]
 
@@ -12,6 +12,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: swift build
+      - name: Сборка
         working-directory: MeetingApp
         run: swift build
+
+      - name: Тесты логики
+        working-directory: MeetingApp
+        run: swift run MeetingAppTests
+
+      # Только быстрые тесты: медленным нужны whisper-cli и модель на диске,
+      # это гигабайты загрузки на каждый прогон. Их гоняем локально
+      # (./scripts/tests/run_tests.sh --full) перед переносом в рабочую сборку.
+      - name: Тесты скриптов
+        working-directory: MeetingApp
+        run: ./scripts/tests/run_tests.sh

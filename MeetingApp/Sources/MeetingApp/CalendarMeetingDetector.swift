@@ -1,5 +1,6 @@
 import Foundation
 import EventKit
+import MeetingCore
 
 // Смотрит на события во ВСЕХ календарях, которые видит macOS — свои (iCloud)
 // и любые подключённые через Системные настройки → Интернет-аккаунты

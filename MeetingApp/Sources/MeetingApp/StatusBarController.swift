@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
+import MeetingCore
 
 // Значок в строке меню (справа вверху, рядом с часами) с быстрыми действиями:
 // запись встречи начинается в один клик, не разыскивая окно приложения.
@@ -47,14 +48,14 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             let elapsed = store.meetingRecordingElapsedSeconds
             let time = String(format: "%02d:%02d", elapsed / 60, elapsed % 60)
             menu.addItem(disabledItem("Идёт запись встречи — \(time)"))
-            menu.addItem(actionItem("Остановить запись и обработать", #selector(stopRecording)))
+            menu.addItem(actionItem("Остановить запись и обработать", #selector(stopRecording), "stop.circle"))
         } else {
-            menu.addItem(actionItem("Начать запись встречи", #selector(startRecording)))
+            menu.addItem(actionItem("Начать запись встречи", #selector(startRecording), "record.circle"))
         }
 
         menu.addItem(.separator())
-        menu.addItem(actionItem("Добавить видео или аудио…", #selector(addMedia)))
-        menu.addItem(actionItem("Добавить готовый транскрипт…", #selector(addTranscript)))
+        menu.addItem(actionItem("Добавить видео или аудио…", #selector(addMedia), "film"))
+        menu.addItem(actionItem("Добавить готовый транскрипт…", #selector(addTranscript), "doc.text"))
 
         menu.addItem(.separator())
         let running = store.jobs.filter { $0.stage.isRunning }
@@ -65,17 +66,21 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         }
 
         menu.addItem(.separator())
-        menu.addItem(actionItem("Открыть приложение", #selector(openApp)))
-        menu.addItem(actionItem("Настройки…", #selector(openSettings)))
+        menu.addItem(actionItem("Открыть приложение", #selector(openApp), "macwindow"))
+        menu.addItem(actionItem("Настройки…", #selector(openSettings), "gearshape"))
         menu.addItem(.separator())
-        menu.addItem(actionItem("Завершить", #selector(quitApp)))
+        menu.addItem(actionItem("Завершить", #selector(quitApp), "power"))
 
         refreshIcon()
     }
 
-    private func actionItem(_ title: String, _ selector: Selector) -> NSMenuItem {
+    // Иконку задаём каждому пункту: если у части пунктов её нет, macOS
+    // подставляет свою (например, шестерёнку к «Настройки…») и выравнивает
+    // соседние пункты по колонке иконок — строки разъезжаются.
+    private func actionItem(_ title: String, _ selector: Selector, _ symbol: String) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: selector, keyEquivalent: "")
         item.target = self
+        item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
         return item
     }
 

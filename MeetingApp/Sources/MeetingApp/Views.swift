@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
+import MeetingCore
 
 // MARK: - Зона перетаскивания
 
