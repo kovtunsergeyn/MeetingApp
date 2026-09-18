@@ -418,6 +418,7 @@ final class JobStore: ObservableObject {
     // MARK: - Инициализация
 
     init() {
+        JobStore.migrateLegacySettingsIfNeeded()
         migrateLegacyLayoutIfNeeded()
         createDirectories()
         loadHistory()
@@ -429,6 +430,36 @@ final class JobStore: ObservableObject {
 
     private func createDirectories() {
         layout.createDirectories()
+    }
+
+    // MARK: - Переезд настроек со старого идентификатора
+
+    // macOS хранит настройки приложения по идентификатору пакета. Когда мы
+    // сменили идентификатор на нейтральный, все настройки — словарь, язык,
+    // выбранная модель, свои платформы ВКС — остались в прежнем хранилище и
+    // приложение запустилось пустым. Переносим их один раз при первом запуске.
+    static func migrateLegacySettingsIfNeeded() {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: "settingsMigratedFromLegacyBundle") else { return }
+        guard let legacyID = Bundle.main.object(forInfoDictionaryKey: "MALegacyBundleID") as? String,
+              !legacyID.isEmpty,
+              legacyID != Bundle.main.bundleIdentifier,
+              let legacy = UserDefaults(suiteName: legacyID) else { return }
+
+        let keys = [
+            "languageID", "modelID", "glossary", "notionDatabaseName",
+            "customMeetingDomains", "meetingDetectionEnabled", "selectedMicrophoneDeviceID"
+        ]
+        var moved: [String] = []
+        for key in keys where defaults.object(forKey: key) == nil {
+            guard let value = legacy.object(forKey: key) else { continue }
+            defaults.set(value, forKey: key)
+            moved.append(key)
+        }
+        defaults.set(true, forKey: "settingsMigratedFromLegacyBundle")
+        if !moved.isEmpty {
+            NSLog("MeetingApp: перенесены настройки со старого идентификатора: %@", moved.joined(separator: ", "))
+        }
     }
 
     // MARK: - Переезд со старой раскладки
