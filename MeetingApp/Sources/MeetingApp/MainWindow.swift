@@ -267,16 +267,23 @@ struct JobListView: View {
         }
     }
 
+    // В колонке всегда список — даже когда показывать нечего.
+    //
+    // Раньше при пустом списке колонка заменялась на заглушку, и вместе с этим
+    // пропадали разделы в боковой панели: после удаления последней задачи в
+    // «Обработке» становилось невозможно перейти в «Историю». Заглушка теперь
+    // живёт строкой внутри списка, и колонка не меняет своей природы.
     private var listContent: some View {
-        Group {
+        List(selection: Binding<UUID?>(
+            get: { store.selectedJobID },
+            set: { store.selectedJobID = $0 }
+        )) {
             if jobs.isEmpty {
                 EmptyStateView(store: store, section: store.selectedSection)
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
             } else {
-                List(selection: Binding<UUID?>(
-                    get: { store.selectedJobID },
-                    set: { store.selectedJobID = $0 }
-                )) {
-                    ForEach(jobs) { job in
+                ForEach(jobs) { job in
                     JobRowView(store: store, job: job)
                         .tag(job.id)
                         .contextMenu {
@@ -289,11 +296,10 @@ struct JobListView: View {
                             }
                             Button("Удалить из истории") { store.removeJob(jobID: job.id) }
                         }
-                    }
                 }
-                .listStyle(.inset)
             }
         }
+        .listStyle(.inset)
     }
 }
 
@@ -329,8 +335,9 @@ struct EmptyStateView: View {
                 Button("Добавить файл…") { store.pickMediaFiles() }
             }
         }
-        .padding(28)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.vertical, 28)
+        .padding(.horizontal, 12)
+        .frame(maxWidth: .infinity)
     }
 
     private var isFiltered: Bool {
