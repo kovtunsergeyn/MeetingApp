@@ -154,10 +154,14 @@ struct JobDetailView: View {
                             }
                             .fixedSize()
                         }
-                        .disabled(!store.isNotionConnected || store.exportingJobIDs.contains(job.id))
-                        .help(store.isNotionConnected
-                              ? "Выгрузить саммари в Notion"
-                              : "Notion не подключён к Claude Code")
+                        // Кнопка больше не блокируется проверкой подключения:
+                        // подключения claude.ai не видны в списке серверов,
+                        // который возвращает claude mcp list, и проверка гасила
+                        // кнопку даже тогда, когда выгрузка исправно работала.
+                        // Если Notion и правда не подключён, выгрузка завершится
+                        // ошибкой с понятным сообщением.
+                        .disabled(store.exportingJobIDs.contains(job.id))
+                        .help("Выгрузить саммари в Notion")
 
                         Button {
                             store.exportSummary(jobID: job.id, to: "notes")

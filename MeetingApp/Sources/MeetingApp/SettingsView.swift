@@ -148,17 +148,17 @@ struct IntegrationsSettingsPane: View {
                             ProgressView().controlSize(.small)
                             Text("проверяю…")
                         } else if store.isNotionConnected {
-                            Label("подключён", systemImage: "checkmark.circle.fill")
+                            Label("виден в списке подключений", systemImage: "checkmark.circle.fill")
                                 .foregroundStyle(.green)
                         } else {
-                            Label("не подключён", systemImage: "xmark.circle")
+                            Label("в списке подключений не найден", systemImage: "questionmark.circle")
                                 .foregroundStyle(.secondary)
                         }
                         Button("Проверить") { store.refreshNotionAvailability() }
                             .controlSize(.small)
                     }
                 }
-                Text("Если базы с таким именем нет, она будет создана при первой выгрузке. Подключение к Notion берётся из Claude Code.")
+                Text("Если базы с таким именем нет, она будет создана при первой выгрузке. Подключение к Notion берётся из Claude Code. Проверка носит справочный характер: подключения claude.ai в списке серверов не отображаются, но выгрузка при этом работает.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
