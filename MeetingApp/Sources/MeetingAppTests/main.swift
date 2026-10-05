@@ -438,6 +438,86 @@ group("Время в проигрывателе") {
     equal(TimeFormat.mmss(-5), "00:00", "отрицательная длительность")
 }
 
+// MARK: - Название встречи по сути разговора
+
+group("Название встречи") {
+    check(JobNaming.isAutomaticName("Встреча 05.10.2026 18-11"), "имя по дате считается автоматическим")
+    check(JobNaming.isAutomaticName("Запись 05.10.2026 18:11"), "запись по дате тоже")
+    check(!JobNaming.isAutomaticName("Встреча 05.10.2026 18-11 — Планы на квартал"),
+          "имя с темой уже не автоматическое")
+    // Человек назвал встречу сам — его название главнее любого придуманного.
+    check(!JobNaming.isAutomaticName("Разбор задач"), "название человека не трогаем")
+
+    equal(JobNaming.compose(automaticName: "Встреча 05.10.2026 18-11", title: "Планы на квартал"),
+          "Встреча 05.10.2026 18-11 — Планы на квартал", "тема дописывается к дате")
+    equal(JobNaming.compose(automaticName: "Встреча 05.10.2026 18-11", title: "«Планы на квартал»."),
+          "Встреча 05.10.2026 18-11 — Планы на квартал", "кавычки и точка убираются")
+    equal(JobNaming.compose(automaticName: "Встреча 05.10.2026 18-11", title: "   "),
+          "Встреча 05.10.2026 18-11", "пустая тема ничего не меняет")
+}
+
+// MARK: - Саммари в блоки Notion
+
+group("Разбор markdown для Notion") {
+    let markdown = """
+    # Встреча 05.10.2026 18-11
+
+    ## Решения
+
+    - Первый пункт
+    - Второй пункт с **важным** словом
+
+    1. Шаг один
+    2. Шаг два
+
+    Обычный абзац,
+    разбитый переносом.
+
+    ---
+    """
+    let blocks = NotionMarkdown.blocks(from: markdown)
+    equal(blocks.map { $0.type },
+          ["heading_1", "heading_2", "bulleted_list_item", "bulleted_list_item",
+           "numbered_list_item", "numbered_list_item", "paragraph", "divider"],
+          "типы блоков по порядку")
+    equal(blocks[6].runs.first?.text, "Обычный абзац, разбитый переносом.",
+          "мягкий перенос не рвёт абзац")
+
+    // Название страницы и так стоит в заголовке записи — дублировать его
+    // первым блоком не нужно.
+    equal(NotionMarkdown.blocksForPage(markdown: markdown).first?.type, "heading_2",
+          "первый заголовок уходит в название страницы")
+
+    equal(NotionMarkdown.runs(from: "обычный **жирный** и `код`"),
+          [NotionMarkdown.TextRun(text: "обычный "),
+           NotionMarkdown.TextRun(text: "жирный", bold: true),
+           NotionMarkdown.TextRun(text: " и "),
+           NotionMarkdown.TextRun(text: "код", code: true)],
+          "жирный текст и код внутри строки")
+
+    equal(NotionMarkdown.runs(from: "смотри [отчёт](https://example.com/report)"),
+          [NotionMarkdown.TextRun(text: "смотри "),
+           NotionMarkdown.TextRun(text: "отчёт", link: "https://example.com/report")],
+          "ссылка в тексте")
+
+    // Notion не принимает отрезок длиннее 2000 символов и отказывает всему
+    // запросу: страница тогда создавалась пустой.
+    let longWord = String(repeating: "слово ", count: 600)
+    let longRuns = NotionMarkdown.runs(from: longWord)
+    check(longRuns.count > 1, "длинный текст делится на части")
+    check(longRuns.allSatisfy { $0.text.count <= NotionMarkdown.maxTextLength },
+          "каждая часть укладывается в предел Notion")
+
+    // Тело запроса должно быть ровно таким, каким его ждёт API.
+    let payload = NotionMarkdown.payload(for: NotionMarkdown.Block(
+        type: "bulleted_list_item",
+        runs: [NotionMarkdown.TextRun(text: "пункт", bold: true)]))
+    let data = try! JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+    equal(String(data: data, encoding: .utf8)!,
+          #"{"bulleted_list_item":{"rich_text":[{"annotations":{"bold":true,"code":false,"italic":false},"text":{"content":"пункт"},"type":"text"}]},"object":"block","type":"bulleted_list_item"}"#,
+          "тело запроса для пункта списка")
+}
+
 // MARK: - Итог
 
 print("")

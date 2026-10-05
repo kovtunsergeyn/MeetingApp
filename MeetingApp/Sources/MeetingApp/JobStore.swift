@@ -504,9 +504,15 @@ final class JobStore: ObservableObject {
     }
 
     func confirmRename() {
-        guard let jobID = renameJobID, let index = jobs.firstIndex(where: { $0.id == jobID }) else { return }
-        let newName = JobRename.sanitized(renameText)
+        guard let jobID = renameJobID else { return }
+        let newName = renameText
         renameJobID = nil
+        renameJob(jobID: jobID, to: newName)
+    }
+
+    private func renameJob(jobID: UUID, to proposedName: String) {
+        guard let index = jobs.firstIndex(where: { $0.id == jobID }) else { return }
+        let newName = JobRename.sanitized(proposedName)
         guard !newName.isEmpty, newName != jobs[index].name else { return }
 
         let oldName = jobs[index].name
@@ -535,6 +541,19 @@ final class JobStore: ObservableObject {
         saveHistory()
         JobFolder.writeMeta(for: jobs[index])
         appendLog("Встреча переименована: «\(oldName)» → «\(newName)».")
+    }
+
+    // MARK: - Название по сути разговора
+
+    // «Встреча 05.10.2026 18-11» ничего не говорит о том, что обсуждали, и в
+    // списке из десятка таких строк найти нужную невозможно. Сборщик саммари
+    // возвращает короткое название по сути разговора, и оно подставляется в
+    // список — но только если человек не назвал встречу сам.
+    private func applyTitleFromSummary(jobID: UUID, scriptOutput: String) {
+        guard let job = jobs.first(where: { $0.id == jobID }) else { return }
+        guard let title = OutputParsing.downloadedTitle(in: scriptOutput) else { return }
+        guard JobNaming.isAutomaticName(job.name) else { return }
+        renameJob(jobID: jobID, to: JobNaming.compose(automaticName: job.name, title: title))
     }
 
     // MARK: - Подхват оборванных записей
@@ -1448,6 +1467,7 @@ final class JobStore: ObservableObject {
             return
         }
 
+        applyTitleFromSummary(jobID: jobID, scriptOutput: result.output)
         updateJob(jobID) { $0.stage = .done; $0.lastError = nil; $0.lastErrorDetail = nil }
         // Показываем результат сразу: иначе задача просто исчезает из очереди,
         // и непонятно, куда делась работа.
@@ -1548,59 +1568,45 @@ final class JobStore: ObservableObject {
 
     // MARK: - Доступность выгрузки
 
-    // Кнопка выгрузки в Notion включается, только если Notion действительно
-    // подключён к Claude Code: иначе нажатие заканчивалось бы невнятной
-    // ошибкой в логе через полминуты.
-    @Published var isNotionConnected: Bool = false
-    @Published var isCheckingNotion: Bool = false
+    // Выгрузка идёт по токену Notion: он лежит в Связке ключей, а кнопка
+    // включается, только если токен задан и Notion его принимает. Раньше
+    // доступность определялась по списку подключений Claude Code — и врала:
+    // подключение там числилось, а сессии приложения оно не доставалось.
+    static let notionKeychainService = "MeetingApp Notion API"
 
-    func refreshNotionAvailability() {
-        guard !isCheckingNotion else { return }
-        isCheckingNotion = true
-        Task.detached { [weak self] in
-            let connected = JobStore.detectNotionConnection()
-            await MainActor.run {
-                self?.isNotionConnected = connected
-                self?.isCheckingNotion = false
-                self?.appendLog(connected
-                                ? "Notion подключён — выгрузка доступна."
-                                : "Notion не найден среди подключений Claude Code — кнопка выгрузки недоступна.")
-            }
+    @Published var notionToken: String = KeychainStore.read(service: JobStore.notionKeychainService) ?? "" {
+        didSet {
+            guard notionToken != oldValue else { return }
+            KeychainStore.write(notionToken, service: JobStore.notionKeychainService)
         }
     }
 
-    // Спрашиваем сам claude: список подключённых MCP-серверов и их состояние.
-    nonisolated private static func detectNotionConnection() -> Bool {
-        let candidates = ["/opt/homebrew/bin/claude", "/usr/local/bin/claude",
-                          NSHomeDirectory() + "/.npm-global/bin/claude"]
-        guard let path = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
-            return false
+    @Published var isNotionConnected: Bool = false
+    @Published var isCheckingNotion: Bool = false
+
+    var hasNotionToken: Bool {
+        return !notionToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    func refreshNotionAvailability() {
+        guard !isCheckingNotion else { return }
+        let token = notionToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty else {
+            isNotionConnected = false
+            return
         }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: path)
-        process.arguments = ["mcp", "list"]
 
-        // Приложению, запущенному из Finder, достаётся скудный PATH: там нет
-        // ни Homebrew, ни node, через который работает claude. Без этого
-        // проверка молча не находила Notion, и кнопка выгрузки оставалась
-        // недоступной, хотя в терминале всё работало.
-        var environment = ProcessInfo.processInfo.environment
-        let extraPaths = "/opt/homebrew/bin:/usr/local/bin:" + NSHomeDirectory() + "/.npm-global/bin"
-        environment["PATH"] = extraPaths + ":" + (environment["PATH"] ?? "/usr/bin:/bin")
-        process.environment = environment
-
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = Pipe()
-        do { try process.run() } catch { return false }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        let output = String(data: data, encoding: .utf8) ?? ""
-        return output.components(separatedBy: .newlines).contains { line in
-            let lower = line.lowercased()
-            // Строка вида «claude.ai Notion: https://… - ✔ Connected»
-            return lower.contains("notion") && !lower.contains("needs authentication")
-                && (line.contains("✔") || lower.contains("connected"))
+        isCheckingNotion = true
+        Task {
+            do {
+                try await NotionClient(token: token).checkToken()
+                isNotionConnected = true
+                appendLog("Notion: токен принят, выгрузка доступна.")
+            } catch {
+                isNotionConnected = false
+                appendLog("Notion: \(error.localizedDescription)")
+            }
+            isCheckingNotion = false
         }
     }
 
@@ -1631,33 +1637,66 @@ final class JobStore: ObservableObject {
         guard !exportingJobIDs.contains(jobID) else { return }
         exportingJobIDs.insert(jobID)
 
+        if target == "notion" {
+            exportToNotion(jobID: jobID, name: job.name, date: job.createdAt, summaryPath: summary)
+        } else {
+            exportToNotes(jobID: jobID, name: job.name, summaryPath: summary)
+        }
+    }
+
+    // Notion. Приложение пишет страницу само, по токену: ни Claude, ни скрипт
+    // здесь больше не участвуют — лишнее звено как раз и ломало выгрузку.
+    private func exportToNotion(jobID: UUID, name: String, date: Date, summaryPath: String) {
+        let token = notionToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        let databaseName = notionDatabaseName
+        let logPath = URL(fileURLWithPath: summaryPath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("export.log").path
+
         Task {
-            var arguments = [target, summary, job.name]
-            if target == "notion" {
-                arguments.append(notionDatabaseName)
-                arguments.append(job.transcriptPath ?? "")
+            appendLog("Выгружаю саммари в Notion: \(name)")
+            do {
+                let markdown = try String(contentsOfFile: summaryPath, encoding: .utf8)
+                let blocks = NotionMarkdown.blocksForPage(markdown: markdown)
+                let client = NotionClient(token: token)
+                let database = try await client.findDatabase(named: databaseName)
+                let link = try await client.createPage(in: database, title: name, date: date, blocks: blocks)
+
+                updateJob(jobID) { $0.notionURL = link }
+                appendLog("Выгрузка завершена: \(name) → \(link)")
+                writeExportLog(path: logPath, text: "Страница создана: \(link)")
+            } catch {
+                // Подробности кладём рядом с саммари: в журнале приложения они
+                // теряются, а при разборе «почему не выгрузилось» нужны именно они.
+                let message = (error as? NotionError)?.errorDescription ?? error.localizedDescription
+                appendLog("Не удалось выгрузить в Notion: \(message)")
+                writeExportLog(path: logPath, text: "Ошибка выгрузки: \(message)")
             }
-            appendLog("Выгружаю саммари (\(target)): \(job.name)")
-            let result = await runScript(name: "export_summary.sh", arguments: arguments, jobID: nil)
+            exportingJobIDs.remove(jobID)
+        }
+    }
+
+    // Заметки — по-прежнему скриптом: там всё держится на AppleScript.
+    private func exportToNotes(jobID: UUID, name: String, summaryPath: String) {
+        Task {
+            appendLog("Выгружаю саммари в Заметки: \(name)")
+            let result = await runScript(name: "export_summary.sh",
+                                         arguments: ["notes", summaryPath, name],
+                                         jobID: nil)
             exportingJobIDs.remove(jobID)
 
-            if result.exitCode == 4 {
-                appendLog("Выгрузка в Notion не уложилась в отведённое время и была прервана. Подробный вывод — в файле export.log рядом с саммари.")
-                return
-            }
-
             if result.exitCode == 0 {
-                if target == "notion", let link = extractNotionURL(from: result.output) {
-                    updateJob(jobID) { $0.notionURL = link }
-                }
-                if target == "notes" {
-                    updateJob(jobID) { $0.savedToNotes = true }
-                }
-                appendLog("Выгрузка завершена: \(job.name)")
+                updateJob(jobID) { $0.savedToNotes = true }
+                appendLog("Выгрузка завершена: \(name)")
             } else {
-                appendLog("Не удалось выгрузить (\(target)): \(job.name)")
+                appendLog("Не удалось сохранить в Заметки: \(name)")
             }
         }
+    }
+
+    private func writeExportLog(path: String, text: String) {
+        let stamp = DateFormatter.localizedString(from: Date(), dateStyle: .short, timeStyle: .medium)
+        try? ("=== \(stamp) ===\n" + text + "\n").write(toFile: path, atomically: true, encoding: .utf8)
     }
 
     // Показать файл саммари в Finder — самый простой способ забрать результат.
@@ -1870,10 +1909,6 @@ final class JobStore: ObservableObject {
         } catch {
             appendLog("Не удалось переместить исходник в папку processed: \(error.localizedDescription)")
         }
-    }
-
-    private func extractNotionURL(from output: String) -> String? {
-        return OutputParsing.notionURL(in: output)
     }
 
     private func extractDownloadedTitle(from output: String) -> String? {

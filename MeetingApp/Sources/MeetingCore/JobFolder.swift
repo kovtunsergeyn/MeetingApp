@@ -166,3 +166,28 @@ public enum InterruptedRecording {
         return true
     }
 }
+
+// MARK: - Название встречи по сути разговора
+
+// Автоматическое имя вида «Встреча 05.10.2026 18-11» годится как метка времени,
+// но в списке из десятка таких строк найти нужную невозможно. После сбора
+// саммари название дополняется темой разговора — при условии, что человек не
+// переименовал встречу сам: его название всегда главнее.
+public enum JobNaming {
+    // Имя считается автоматическим, если это «Встреча <дата> <время>» или
+    // «Запись <дата> <время>» без добавленной человеком темы.
+    public static func isAutomaticName(_ name: String) -> Bool {
+        let pattern = #"^(Встреча|Запись) \d{2}\.\d{2}\.\d{4} \d{2}[-:]\d{2}$"#
+        return name.range(of: pattern, options: .regularExpression) != nil
+    }
+
+    // К исходному имени добавляется тема: дата остаётся на месте, потому что по
+    // ней встречи выстраиваются в понятном порядке и ищутся «по дню».
+    public static func compose(automaticName: String, title: String) -> String {
+        let clean = title
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: ".«»\"'"))
+        guard !clean.isEmpty else { return automaticName }
+        return automaticName + " — " + clean
+    }
+}
