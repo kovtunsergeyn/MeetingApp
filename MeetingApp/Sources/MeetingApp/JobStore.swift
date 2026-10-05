@@ -1562,6 +1562,9 @@ final class JobStore: ObservableObject {
             await MainActor.run {
                 self?.isNotionConnected = connected
                 self?.isCheckingNotion = false
+                self?.appendLog(connected
+                                ? "Notion подключён — выгрузка доступна."
+                                : "Notion не найден среди подключений Claude Code — кнопка выгрузки недоступна.")
             }
         }
     }
@@ -1576,6 +1579,16 @@ final class JobStore: ObservableObject {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = ["mcp", "list"]
+
+        // Приложению, запущенному из Finder, достаётся скудный PATH: там нет
+        // ни Homebrew, ни node, через который работает claude. Без этого
+        // проверка молча не находила Notion, и кнопка выгрузки оставалась
+        // недоступной, хотя в терминале всё работало.
+        var environment = ProcessInfo.processInfo.environment
+        let extraPaths = "/opt/homebrew/bin:/usr/local/bin:" + NSHomeDirectory() + "/.npm-global/bin"
+        environment["PATH"] = extraPaths + ":" + (environment["PATH"] ?? "/usr/bin:/bin")
+        process.environment = environment
+
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = Pipe()
