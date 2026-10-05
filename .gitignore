@@ -3,11 +3,11 @@ MeetingApp/.build/
 MeetingApp/MeetingApp.app/
 MeetingApp/MeetingApp-Test.app/
 *.zip
-
 # Личные данные пользователя — никогда не коммитим
 /Встречи/
 /swifttest/
 *.mkv
 *.mp4
 *.mov
-
+.DS_Store
+**/.DS_Store
