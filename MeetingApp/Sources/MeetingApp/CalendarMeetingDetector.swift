@@ -70,6 +70,34 @@ final class CalendarMeetingDetector {
         }
     }
 
+    // Название события, которое идёт прямо сейчас. Если таких несколько,
+    // выбираем то, где есть ссылка на созвон: запись почти наверняка о нём.
+    func currentEventTitle(at now: Date = Date()) -> String? {
+        guard hasAccess else { return nil }
+        let calendars = store.calendars(for: .event)
+        guard !calendars.isEmpty else { return nil }
+        let predicate = store.predicateForEvents(withStart: now.addingTimeInterval(-12 * 3600),
+                                                 end: now.addingTimeInterval(10 * 60),
+                                                 calendars: calendars)
+        let current = store.events(matching: predicate).filter {
+            !$0.isAllDay && $0.startDate <= now.addingTimeInterval(10 * 60) && $0.endDate > now
+        }
+        let hasLink = { (event: EKEvent) -> Bool in
+            [event.location, event.notes, event.url?.absoluteString].compactMap { $0 }
+                .contains { MeetingLinkDetector.firstMeetingLink(in: $0) != nil }
+        }
+        let best = current.first(where: hasLink) ?? current.first
+        let title = best?.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return title.isEmpty ? nil : title
+    }
+
+    private var hasAccess: Bool {
+        if #available(macOS 14.0, *) {
+            return EKEventStore.authorizationStatus(for: .event) == .fullAccess
+        }
+        return EKEventStore.authorizationStatus(for: .event) == .authorized
+    }
+
     private func poll() {
         let now = Date()
         let windowStart = now.addingTimeInterval(-30 * 60)

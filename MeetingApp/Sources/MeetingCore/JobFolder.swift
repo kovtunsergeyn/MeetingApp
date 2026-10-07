@@ -157,8 +157,10 @@ public enum TimeFormat {
 // приняты за прерванные и отправлены распознаваться заново, на большой модели.
 public enum InterruptedRecording {
     public static func shouldAdopt(folderName: String, layout: AppLayout, knownNames: [String]) -> Bool {
-        // Задача с таким названием уже есть в истории.
-        if knownNames.contains(folderName) { return false }
+        // Задача с таким названием уже есть в истории — в том числе если к
+        // автоматическому имени потом дописали тему: однажды переименование
+        // встречи отправило её старую запись распознаваться заново.
+        if knownNames.contains(where: { JobNaming.extends($0, base: folderName) }) { return false }
         // Для этой встречи уже есть готовый транскрипт — работа сделана.
         if FileManager.default.fileExists(
             atPath: layout.transcriptsDir + "/" + folderName + "/transcript.txt"
@@ -171,9 +173,14 @@ public enum InterruptedRecording {
 
 // Автоматическое имя вида «Встреча 05.10.2026 18-11» годится как метка времени,
 // но в списке из десятка таких строк найти нужную невозможно. После сбора
-// саммари название дополняется темой разговора — при условии, что человек не
-// переименовал встречу сам: его название всегда главнее.
+// саммари название дополняется контекстом: как событие называлось в календаре
+// и о чём говорили — при условии, что человек не переименовал встречу сам:
+// его название всегда главнее.
 public enum JobNaming {
+    // Разделитель частей — дефис с пробелами, как в названиях, которые
+    // человек даёт сам и которые лежат в Notion.
+    public static let separator = " - "
+
     // Имя считается автоматическим, если это «Встреча <дата> <время>» или
     // «Запись <дата> <время>» без добавленной человеком темы.
     public static func isAutomaticName(_ name: String) -> Bool {
@@ -181,13 +188,45 @@ public enum JobNaming {
         return name.range(of: pattern, options: .regularExpression) != nil
     }
 
-    // К исходному имени добавляется тема: дата остаётся на месте, потому что по
-    // ней встречи выстраиваются в понятном порядке и ищутся «по дню».
-    public static func compose(automaticName: String, title: String) -> String {
-        let clean = title
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .trimmingCharacters(in: CharacterSet(charactersIn: ".«»\"'"))
-        guard !clean.isEmpty else { return automaticName }
-        return automaticName + " — " + clean
+    // Имя совпадает с base или продолжает его темой.
+    public static func extends(_ name: String, base: String) -> Bool {
+        return name == base || name.hasPrefix(base + separator) || name.hasPrefix(base + " — ")
+    }
+
+    // «Встреча <дата> <время> - <событие календаря> - <тема>». Дата остаётся
+    // впереди: по ней встречи выстраиваются по порядку и ищутся «по дню».
+    // Событие календаря говорит, что это за встреча вообще (регулярная
+    // планёрка, разбор с подрядчиком), тема — о чём шла речь именно сегодня.
+    // Тема, которая просто повторяет название события, второй раз не пишется.
+    public static func compose(automaticName: String, calendarTitle: String? = nil, title: String?) -> String {
+        let clean = { (s: String?) -> String in
+            (s ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .trimmingCharacters(in: CharacterSet(charactersIn: ".«»\"'"))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        let event = clean(calendarTitle)
+        var topic = clean(title)
+        if !event.isEmpty, topic.lowercased() == event.lowercased() { topic = "" }
+        return ([automaticName, event, topic].filter { !$0.isEmpty }).joined(separator: separator)
+    }
+}
+
+// MARK: - Папка записи встречи
+
+public enum MeetingFolderName {
+    // Рядом с дорожками лежит название события из календаря: если запись
+    // оборвётся, при подхвате контекст встречи не потеряется.
+    public static let calendarFileName = "calendar-event.txt"
+
+    private static let formatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "dd.MM.yyyy HH-mm"
+        return formatter
+    }()
+
+    // «Встреча 05.10.2026 18-11» — то же автоматическое имя, что и у задачи.
+    public static func forRecording(startedAt date: Date) -> String {
+        return "Встреча " + formatter.string(from: date)
     }
 }

@@ -303,6 +303,11 @@ group("Обработанная встреча не подхватывается
           "настоящая прерванная запись подхватывается")
     check(!InterruptedRecording.shouldAdopt(folderName: name, layout: layout, knownNames: [name]),
           "встреча, уже известная приложению, не дублируется")
+    // Встречу переименовали, дописав тему, а папка записи осталась со старым
+    // именем: раньше её принимали за прерванную и распознавали заново.
+    check(!InterruptedRecording.shouldAdopt(folderName: "Встреча 01.01.2026 11-00", layout: layout,
+                                            knownNames: ["Встреча 01.01.2026 11-00 - Планёрка"]),
+          "переименованная встреча не подхватывается заново")
 }
 
 group("Удаление вычищает записи задачи из всех папок") {
@@ -443,17 +448,35 @@ group("Время в проигрывателе") {
 group("Название встречи") {
     check(JobNaming.isAutomaticName("Встреча 05.10.2026 18-11"), "имя по дате считается автоматическим")
     check(JobNaming.isAutomaticName("Запись 05.10.2026 18:11"), "запись по дате тоже")
-    check(!JobNaming.isAutomaticName("Встреча 05.10.2026 18-11 — Планы на квартал"),
+    check(!JobNaming.isAutomaticName("Встреча 05.10.2026 18-11 - Планы на квартал"),
           "имя с темой уже не автоматическое")
     // Человек назвал встречу сам — его название главнее любого придуманного.
     check(!JobNaming.isAutomaticName("Разбор задач"), "название человека не трогаем")
 
-    equal(JobNaming.compose(automaticName: "Встреча 05.10.2026 18-11", title: "Планы на квартал"),
-          "Встреча 05.10.2026 18-11 — Планы на квартал", "тема дописывается к дате")
-    equal(JobNaming.compose(automaticName: "Встреча 05.10.2026 18-11", title: "«Планы на квартал»."),
-          "Встреча 05.10.2026 18-11 — Планы на квартал", "кавычки и точка убираются")
-    equal(JobNaming.compose(automaticName: "Встреча 05.10.2026 18-11", title: "   "),
-          "Встреча 05.10.2026 18-11", "пустая тема ничего не меняет")
+    let auto = "Встреча 05.10.2026 18-11"
+    equal(JobNaming.compose(automaticName: auto, title: "Планы на квартал"),
+          "Встреча 05.10.2026 18-11 - Планы на квартал", "тема дописывается к дате через дефис")
+    equal(JobNaming.compose(automaticName: auto, title: "«Планы на квартал»."),
+          "Встреча 05.10.2026 18-11 - Планы на квартал", "кавычки и точка убираются")
+    equal(JobNaming.compose(automaticName: auto, title: "   "), auto, "пустая тема ничего не меняет")
+    equal(JobNaming.compose(automaticName: auto, title: nil), auto, "без темы остаётся дата")
+
+    // Событие календаря — контекст встречи: что это за встреча вообще.
+    equal(JobNaming.compose(automaticName: auto, calendarTitle: "Планёрка", title: "Сроки по выпуску"),
+          "Встреча 05.10.2026 18-11 - Планёрка - Сроки по выпуску", "событие календаря идёт перед темой")
+    equal(JobNaming.compose(automaticName: auto, calendarTitle: "Планёрка", title: nil),
+          "Встреча 05.10.2026 18-11 - Планёрка", "без темы хватает события календаря")
+    equal(JobNaming.compose(automaticName: auto, calendarTitle: "Планёрка", title: "планёрка"),
+          "Встреча 05.10.2026 18-11 - Планёрка", "тема, повторяющая событие, второй раз не пишется")
+    equal(JobNaming.compose(automaticName: auto, calendarTitle: "  ", title: "Сроки"),
+          "Встреча 05.10.2026 18-11 - Сроки", "пустое событие не оставляет лишнего дефиса")
+
+    check(JobNaming.extends(auto + " - Планёрка", base: auto), "имя с темой продолжает автоматическое")
+    check(JobNaming.extends(auto + " — Планёрка", base: auto), "и со старым длинным тире тоже")
+    check(!JobNaming.extends("Встреча 05.10.2026 18-111", base: auto), "другое время — другая встреча")
+
+    let date = DateComponents(calendar: Calendar.current, year: 2026, month: 10, day: 5, hour: 18, minute: 11).date!
+    equal(MeetingFolderName.forRecording(startedAt: date), auto, "папка записи называется как автоматическое имя")
 }
 
 // MARK: - Саммари в блоки Notion

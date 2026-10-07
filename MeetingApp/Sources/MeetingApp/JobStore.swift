@@ -123,6 +123,8 @@ final class JobStore: ObservableObject {
 
     private var ignoredMeetingURLs: Set<String> = []
     private var meetingRecordingStartDate: Date?
+    private var meetingRecordingDir: String?
+    private var meetingCalendarTitle: String?
     private var pendingSystemAudioURL: URL?
     private var meetingElapsedTimer: Timer?
     private var originalDefaultInputDeviceID: AudioDeviceID?
@@ -210,7 +212,21 @@ final class JobStore: ObservableObject {
             }
         }
 
-        audioRecorder.start()
+        // Дорожки пишутся сразу в папку встречи, а не во временную папку
+        // системы: если приложение закроется посреди встречи, при следующем
+        // запуске запись подхватится оттуда. Однажды из-за временной папки
+        // получасовая встреча так и не попала в список.
+        let startDate = Date()
+        let safeName = MeetingFolderName.forRecording(startedAt: startDate)
+        let destDir = recordingsDir + "/" + safeName
+        try? FileManager.default.createDirectory(atPath: destDir, withIntermediateDirectories: true)
+        meetingRecordingStartDate = startDate
+        meetingRecordingDir = destDir
+        meetingCalendarTitle = calendarDetector.currentEventTitle(at: startDate)
+        if let title = meetingCalendarTitle {
+            try? title.write(toFile: destDir + "/" + MeetingFolderName.calendarFileName, atomically: true, encoding: .utf8)
+        }
+        audioRecorder.start(to: URL(fileURLWithPath: destDir + "/" + MeetingTracks.micTrackName))
 
         if !CGPreflightScreenCaptureAccess() {
             appendLog("Запускаю запись встречи… жду подтверждения разрешения «Запись экрана» в системном диалоге.")
@@ -219,15 +235,19 @@ final class JobStore: ObservableObject {
         }
 
         Task {
-            guard let systemURL = await systemAudioRecorder.start() else {
+            let systemTarget = URL(fileURLWithPath: destDir + "/" + MeetingTracks.systemTrackName)
+            guard let systemURL = await systemAudioRecorder.start(to: systemTarget) else {
                 let detail = systemAudioRecorder.lastErrorMessage ?? "причина неизвестна"
                 appendLog("Не удалось начать запись системного звука: \(detail)")
                 meetingRecordingPermissionIssue = true
                 audioRecorder.cancel()
+                // Пустая папка иначе осталась бы «прерванной записью» без звука.
+                try? FileManager.default.removeItem(atPath: destDir + "/" + MeetingFolderName.calendarFileName)
+                try? FileManager.default.removeItem(atPath: destDir)
+                meetingRecordingDir = nil
                 return
             }
             pendingSystemAudioURL = systemURL
-            meetingRecordingStartDate = Date()
             isMeetingRecordingActive = true
             startMeetingElapsedTimer()
             appendLog("Начата запись встречи.")
@@ -259,8 +279,11 @@ final class JobStore: ObservableObject {
     private func finalizeMeetingRecording(systemURL: URL, micURL: URL?) async {
         appendLog("Свожу дорожки записи встречи…")
         let startDate = meetingRecordingStartDate ?? Date()
-        let safeName = "Встреча " + DateFormatter.rowDate.string(from: startDate).replacingOccurrences(of: ":", with: "-")
-        let destDir = recordingsDir + "/" + safeName
+        let destDir = meetingRecordingDir ?? recordingsDir + "/" + MeetingFolderName.forRecording(startedAt: startDate)
+        let safeName = URL(fileURLWithPath: destDir).lastPathComponent
+        let calendarTitle = meetingCalendarTitle
+        meetingRecordingDir = nil
+        meetingCalendarTitle = nil
         try? FileManager.default.createDirectory(atPath: destDir, withIntermediateDirectories: true)
         let mixedPath = destDir + "/meeting.m4a"
 
@@ -275,12 +298,14 @@ final class JobStore: ObservableObject {
         // накладывается друг на друга и видно, кто говорит. Удалим их сразу
         // после успешной транскрибации.
         let fm = FileManager.default
-        try? fm.removeItem(atPath: destDir + "/" + MeetingTracks.systemTrackName)
-        try? fm.moveItem(at: systemURL, to: URL(fileURLWithPath: destDir + "/" + MeetingTracks.systemTrackName))
-        if let micURL {
-            try? fm.removeItem(atPath: destDir + "/" + MeetingTracks.micTrackName)
-            try? fm.moveItem(at: micURL, to: URL(fileURLWithPath: destDir + "/" + MeetingTracks.micTrackName))
-        } else {
+        for (url, name) in [(systemURL, MeetingTracks.systemTrackName), (micURL, MeetingTracks.micTrackName)] {
+            guard let url else { continue }
+            let target = destDir + "/" + name
+            if url.path == target { continue }
+            try? fm.removeItem(atPath: target)
+            try? fm.moveItem(at: url, to: URL(fileURLWithPath: target))
+        }
+        if micURL == nil {
             // Без дорожки микрофона встреча запишется «в одну сторону»: будут
             // слышны собеседники, но не свой голос. Обычно это неразрешённый
             // доступ к микрофону.
@@ -295,6 +320,7 @@ final class JobStore: ObservableObject {
         var job = Job(sourcePath: mixedPath)
         job.name = safeName
         job.isMeetingRecording = true
+        job.calendarTitle = calendarTitle
         jobs.append(job)
         appendLog("Запись встречи добавлена в очередь: \(safeName)")
         saveHistory()
@@ -448,7 +474,11 @@ final class JobStore: ObservableObject {
         adoptInterruptedRecordings()
         normalizeStagesOnLaunch()
         MeetingLinkDetector.customPatterns = customMeetingDomains.map { ($0.domain, $0.label) }
-        startMeetingDetection()
+        // Детектор встреч запускаем следующим проходом цикла, а не прямо здесь:
+        // хранилище создаётся, пока SwiftUI строит главное окно, и если в этот
+        // момент в календаре шла встреча, окно предложения записи открывалось
+        // посреди построения — macOS роняла приложение при каждом запуске.
+        DispatchQueue.main.async { [weak self] in self?.startMeetingDetection() }
         refreshNotionAvailability()
         MeetingNotifier.shared.prepare(store: self)
 
@@ -536,6 +566,20 @@ final class JobStore: ObservableObject {
             }
         }
 
+        // Папка с исходной записью встречи тоже названа по встрече. Если её
+        // не перенести, при следующем запуске она выглядит как незнакомая
+        // прерванная запись и встреча уходит распознаваться заново.
+        let oldRecording = recordingsDir + "/" + oldName
+        let newRecording = recordingsDir + "/" + newName
+        var isDirectory: ObjCBool = false
+        if fm.fileExists(atPath: oldRecording, isDirectory: &isDirectory), isDirectory.boolValue,
+           !fm.fileExists(atPath: newRecording),
+           (try? fm.moveItem(atPath: oldRecording, toPath: newRecording)) != nil {
+            jobs[index].sourcePath = JobRename.movedPath(jobs[index].sourcePath,
+                                                        fromFolder: oldRecording,
+                                                        toFolder: newRecording)
+        }
+
         jobs[index].name = newName
         jobs[index].updatedAt = Date()
         saveHistory()
@@ -551,9 +595,10 @@ final class JobStore: ObservableObject {
     // список — но только если человек не назвал встречу сам.
     private func applyTitleFromSummary(jobID: UUID, scriptOutput: String) {
         guard let job = jobs.first(where: { $0.id == jobID }) else { return }
-        guard let title = OutputParsing.downloadedTitle(in: scriptOutput) else { return }
         guard JobNaming.isAutomaticName(job.name) else { return }
-        renameJob(jobID: jobID, to: JobNaming.compose(automaticName: job.name, title: title))
+        let title = OutputParsing.downloadedTitle(in: scriptOutput)
+        let name = JobNaming.compose(automaticName: job.name, calendarTitle: job.calendarTitle, title: title)
+        renameJob(jobID: jobID, to: name)
     }
 
     // MARK: - Подхват оборванных записей
@@ -617,6 +662,8 @@ final class JobStore: ObservableObject {
         var job = Job(sourcePath: mixed)
         job.name = name
         job.isMeetingRecording = true
+        job.calendarTitle = (try? String(contentsOfFile: folder + "/" + MeetingFolderName.calendarFileName, encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         jobs.append(job)
         appendLog("Найдена прерванная запись «\(name)» — вернул её в обработку.")
         saveHistory()
