@@ -468,6 +468,8 @@ final class JobStore: ObservableObject {
         JobStore.migrateLegacySettingsIfNeeded()
         migrateLegacyLayoutIfNeeded()
         createDirectories()
+        deployBundledScripts()
+        promptSetupOnFirstRun()
         loadHistory()
         backfillMetaFiles()
         adoptJobsFoundOnDisk()
@@ -520,6 +522,68 @@ final class JobStore: ObservableObject {
 
     private func createDirectories() {
         layout.createDirectories()
+    }
+
+    // Первый запуск на чужой машине: сразу показываем, чего не хватает.
+    // Иначе человек видит пустое окно и узнаёт о недостающих компонентах
+    // только когда нажмёт «Записать встречу» — посреди начавшейся встречи.
+    private func promptSetupOnFirstRun() {
+        let key = "didShowFirstRunSetup"
+        guard !UserDefaults.standard.bool(forKey: key) else { return }
+        UserDefaults.standard.set(true, forKey: key)
+
+        // Не во время построения окна: открытый в этот момент лист роняет
+        // приложение — на этом уже обжигались с предложением записи.
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            let missing = self.missingDependencies(requireClaude: true, requireYtDlp: true)
+            guard !missing.isEmpty else { return }
+            self.pendingDependencies = missing
+            self.showDependencySheet = true
+        }
+    }
+
+    // MARK: - Раскладка скриптов
+
+    // Скрипты лежат внутри приложения и раскладываются в папку данных при
+    // запуске. Благодаря этому .app самодостаточен: его можно отдать другому
+    // человеку, и у него всё заработает без возни с файлами. Перезаписываем
+    // только то, что отличается от вложенного в приложение, — чужие файлы в
+    // этой папке не трогаем.
+    private func deployBundledScripts() {
+        guard let bundledDir = Bundle.main.resourceURL?.appendingPathComponent("scripts"),
+              FileManager.default.fileExists(atPath: bundledDir.path) else { return }
+
+        // Если человек указал в настройках свою папку со скриптами, значит он
+        // правит их сам — подменять их приложение не вправе.
+        guard scriptsDir == layout.scriptsDir else { return }
+
+        let fm = FileManager.default
+        let names = (try? fm.contentsOfDirectory(atPath: bundledDir.path)) ?? []
+
+        var bundled: [String: String] = [:]
+        var installed: [String: String] = [:]
+        for name in names {
+            guard let content = try? String(contentsOf: bundledDir.appendingPathComponent(name), encoding: .utf8)
+            else { continue }
+            bundled[name] = content
+            installed[name] = try? String(contentsOfFile: scriptsDir + "/" + name, encoding: .utf8)
+        }
+
+        let outdated = ScriptSync.outdatedNames(bundled: bundled, installed: installed)
+        guard !outdated.isEmpty else { return }
+
+        try? fm.createDirectory(atPath: scriptsDir, withIntermediateDirectories: true)
+        for name in outdated {
+            let destination = scriptsDir + "/" + name
+            do {
+                try bundled[name]?.write(toFile: destination, atomically: true, encoding: .utf8)
+                try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: destination)
+            } catch {
+                appendLog("Не удалось разложить скрипт \(name): \(error.localizedDescription)")
+            }
+        }
+        appendLog("Скрипты обновлены из приложения: \(outdated.count) шт.")
     }
 
     // MARK: - Переименование встречи

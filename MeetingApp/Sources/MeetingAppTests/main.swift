@@ -541,6 +541,25 @@ group("Разбор markdown для Notion") {
           "тело запроса для пункта списка")
 }
 
+// MARK: - Скрипты внутри приложения
+
+group("Раскладка скриптов из приложения") {
+    let bundled = ["transcribe.sh": "новое", "summarize.sh": "одинаковое"]
+
+    equal(ScriptSync.outdatedNames(bundled: bundled, installed: [:]),
+          ["summarize.sh", "transcribe.sh"], "на чистой машине раскладываются все")
+    equal(ScriptSync.outdatedNames(bundled: bundled, installed: bundled), [],
+          "совпадающие скрипты не трогаем")
+    equal(ScriptSync.outdatedNames(bundled: bundled,
+                                   installed: ["transcribe.sh": "старое", "summarize.sh": "одинаковое"]),
+          ["transcribe.sh"], "обновляется только изменившийся скрипт")
+    // В папке со скриптами может лежать и чужое — стирать его приложение не вправе.
+    equal(ScriptSync.outdatedNames(bundled: bundled,
+                                   installed: ["transcribe.sh": "новое", "summarize.sh": "одинаковое",
+                                               "моё.sh": "руками"]),
+          [], "посторонние файлы в папке не мешают")
+}
+
 // MARK: - Итог
 
 print("")
