@@ -584,6 +584,9 @@ struct UninstallSheet: View {
 
 @main
 struct MeetingAppEntry: App {
+    // Делегат нужен ради щелчка по значку в Dock: SwiftUI такого события не
+    // отдаёт, а без него свёрнутое окно не вернуть.
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var store = JobStore()
 
     var body: some Scene {

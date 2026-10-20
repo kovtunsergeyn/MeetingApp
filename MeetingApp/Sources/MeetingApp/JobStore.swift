@@ -484,27 +484,6 @@ final class JobStore: ObservableObject {
         refreshNotionAvailability()
         MeetingNotifier.shared.prepare(store: self)
 
-        // Свёрнутое в Dock окно нужно возвращать самому: щелчок по значку в
-        // Dock активирует приложение, но окно остаётся свёрнутым, и открыть
-        // его становится нечем — выглядит как зависшее приложение.
-        NotificationCenter.default.addObserver(
-            forName: NSApplication.didBecomeActiveNotification,
-            object: nil,
-            queue: .main
-        ) { _ in
-            Task { @MainActor in
-                let hasVisibleWindow = NSApp.windows.contains {
-                    $0.isVisible && !$0.isMiniaturized && $0.canBecomeMain
-                }
-                guard !hasVisibleWindow else { return }
-                for window in NSApp.windows where window.isMiniaturized {
-                    window.deminiaturize(nil)
-                    window.makeKeyAndOrderFront(nil)
-                    break
-                }
-            }
-        }
-
         // Скрипты, запущенные приложением, не должны оставаться работать после
         // его закрытия: однажды выгрузка в Notion пережила приложение и висела
         // ещё десять минут, а увидеть её было негде.
