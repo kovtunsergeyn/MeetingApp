@@ -1,10 +1,13 @@
 #!/bin/bash
-# Выгрузка готового саммари наружу. Вызывается кнопкой из истории, а не
+# Сохранение готового саммари в Заметки. Вызывается кнопкой из истории, а не
 # автоматически: куда отправлять результат — решение человека, а не приложения.
 #
+# Выгрузка в Notion живёт не здесь: приложение обращается к API Notion само,
+# по токену из Связки ключей. Через claude это раньше шло и оказалось
+# ненадёжным — подключения аккаунта claude.ai сессии приложения не достаются.
+#
 # Использование:
-#   ./export_summary.sh notion "/путь/summary.md" "Название встречи" "Имя базы" ["/путь/transcript.txt"]
-#   ./export_summary.sh notes  "/путь/summary.md" "Название встречи"
+#   ./export_summary.sh notes "/путь/summary.md" "Название встречи"
 set -e
 
 TARGET="$1"
@@ -12,72 +15,13 @@ SUMMARY="$2"
 NAME="$3"
 
 if [ -z "$TARGET" ] || [ -z "$SUMMARY" ] || [ ! -s "$SUMMARY" ]; then
-  echo "Использование: ./export_summary.sh <notion|notes> <summary.md> <название> [имя базы] [транскрипт]"
+  echo "Использование: ./export_summary.sh notes <summary.md> <название>"
   exit 1
 fi
 
 export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.npm-global/bin:/usr/bin:/bin:$PATH"
 
 case "$TARGET" in
-  notion)
-    NOTION_DATABASE="${4:-Саммари встреч}"
-    TRANSCRIPT="$5"
-
-    if ! command -v claude &> /dev/null; then
-      echo "Claude Code не найден — через него идёт доступ к Notion."
-      exit 1
-    fi
-
-    # Имя MCP-сервера зависит от того, как у человека подключён Notion в Claude
-    # Code: через аккаунт claude.ai он называется «claude.ai Notion», при ручном
-    # подключении — как угодно. Спрашиваем у самого claude и превращаем имя в
-    # префикс инструментов (всё, кроме букв и цифр, → подчёркивание).
-    NOTION_SERVER=$(claude mcp list 2>/dev/null \
-      | grep -i "notion" \
-      | head -1 \
-      | sed 's/ - .*//' \
-      | sed 's/:.*//' \
-      | sed 's/[^A-Za-z0-9]/_/g')
-    if [ -n "$NOTION_SERVER" ]; then
-      echo "Notion подключён как «$NOTION_SERVER»."
-    else
-      echo "Не нашёл подключённый Notion в claude mcp list — пробую стандартное имя."
-      NOTION_SERVER="claude_ai_Notion"
-    fi
-
-    ATTACH_INSTRUCTION=""
-    if [ -n "$TRANSCRIPT" ] && [ -s "$TRANSCRIPT" ]; then
-      ATTACH_INSTRUCTION="
-Прикрепи файл транскрипта ($TRANSCRIPT) к записи, если в базе есть поле для файлов.
-Если файл больше ~180 КБ — разбей его на части по смысловым границам и прикрепи все."
-    fi
-
-    # Ограничение по времени. Без него зависшая выгрузка крутится бесконечно:
-    # кнопка в приложении «думает», процесс живёт, а понять, что происходит,
-    # нечем. Восемь минут — с запасом: обычная выгрузка занимает меньше минуты.
-    TIMEOUT_SECONDS=480
-    EXPORT_LOG="$(dirname "$SUMMARY")/export.log"
-
-    trap 'echo "Выгрузка прервана по времени ($TIMEOUT_SECONDS с). Подробности: $EXPORT_LOG"; exit 4' TERM
-    ( sleep "$TIMEOUT_SECONDS"; kill -TERM $$ 2>/dev/null ) &
-    WATCHDOG=$!
-
-    echo "Выгружаю саммари в Notion… (подробный вывод: $EXPORT_LOG)"
-    claude -p "Прочитай файл саммари: $SUMMARY (название встречи: \"$NAME\").
-Сохрани его новой записью в базе Notion «$NOTION_DATABASE».
-Найди базу поиском по названию; если такой базы нет — создай её.
-Заполни атрибуты по смыслу саммари: название, дата встречи, участники, теги, статус —
-только теми значениями, которые есть в тексте, ничего не выдумывая.
-Содержимое страницы — само саммари.$ATTACH_INSTRUCTION
-
-В самой последней строке ответа выведи только ссылку на созданную страницу." \
-      --allowedTools "Read" "mcp__${NOTION_SERVER}__*" \
-      --max-turns 30 </dev/null 2>&1 | tee -a "$EXPORT_LOG"
-
-    kill "$WATCHDOG" 2>/dev/null
-    trap - TERM
-    ;;
-
   notes)
     echo "Сохраняю саммари в Заметки…"
     # Notes.app хранит текст как HTML: обычные переносы строк схлопнулись бы
@@ -105,7 +49,7 @@ APPLESCRIPT
     ;;
 
   *)
-    echo "Неизвестная цель выгрузки: $TARGET (ожидается notion или notes)"
+    echo "Неизвестная цель выгрузки: $TARGET (ожидается notes)"
     exit 1
     ;;
 esac

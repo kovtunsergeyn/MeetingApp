@@ -123,6 +123,8 @@ final class JobStore: ObservableObject {
 
     private var ignoredMeetingURLs: Set<String> = []
     private var meetingRecordingStartDate: Date?
+    private var meetingRecordingDir: String?
+    private var meetingCalendarTitle: String?
     private var pendingSystemAudioURL: URL?
     private var meetingElapsedTimer: Timer?
     private var originalDefaultInputDeviceID: AudioDeviceID?
@@ -210,7 +212,21 @@ final class JobStore: ObservableObject {
             }
         }
 
-        audioRecorder.start()
+        // Дорожки пишутся сразу в папку встречи, а не во временную папку
+        // системы: если приложение закроется посреди встречи, при следующем
+        // запуске запись подхватится оттуда. Однажды из-за временной папки
+        // получасовая встреча так и не попала в список.
+        let startDate = Date()
+        let safeName = MeetingFolderName.forRecording(startedAt: startDate)
+        let destDir = recordingsDir + "/" + safeName
+        try? FileManager.default.createDirectory(atPath: destDir, withIntermediateDirectories: true)
+        meetingRecordingStartDate = startDate
+        meetingRecordingDir = destDir
+        meetingCalendarTitle = calendarDetector.currentEventTitle(at: startDate)
+        if let title = meetingCalendarTitle {
+            try? title.write(toFile: destDir + "/" + MeetingFolderName.calendarFileName, atomically: true, encoding: .utf8)
+        }
+        audioRecorder.start(to: URL(fileURLWithPath: destDir + "/" + MeetingTracks.micTrackName))
 
         if !CGPreflightScreenCaptureAccess() {
             appendLog("Запускаю запись встречи… жду подтверждения разрешения «Запись экрана» в системном диалоге.")
@@ -219,15 +235,19 @@ final class JobStore: ObservableObject {
         }
 
         Task {
-            guard let systemURL = await systemAudioRecorder.start() else {
+            let systemTarget = URL(fileURLWithPath: destDir + "/" + MeetingTracks.systemTrackName)
+            guard let systemURL = await systemAudioRecorder.start(to: systemTarget) else {
                 let detail = systemAudioRecorder.lastErrorMessage ?? "причина неизвестна"
                 appendLog("Не удалось начать запись системного звука: \(detail)")
                 meetingRecordingPermissionIssue = true
                 audioRecorder.cancel()
+                // Пустая папка иначе осталась бы «прерванной записью» без звука.
+                try? FileManager.default.removeItem(atPath: destDir + "/" + MeetingFolderName.calendarFileName)
+                try? FileManager.default.removeItem(atPath: destDir)
+                meetingRecordingDir = nil
                 return
             }
             pendingSystemAudioURL = systemURL
-            meetingRecordingStartDate = Date()
             isMeetingRecordingActive = true
             startMeetingElapsedTimer()
             appendLog("Начата запись встречи.")
@@ -259,8 +279,11 @@ final class JobStore: ObservableObject {
     private func finalizeMeetingRecording(systemURL: URL, micURL: URL?) async {
         appendLog("Свожу дорожки записи встречи…")
         let startDate = meetingRecordingStartDate ?? Date()
-        let safeName = "Встреча " + DateFormatter.rowDate.string(from: startDate).replacingOccurrences(of: ":", with: "-")
-        let destDir = recordingsDir + "/" + safeName
+        let destDir = meetingRecordingDir ?? recordingsDir + "/" + MeetingFolderName.forRecording(startedAt: startDate)
+        let safeName = URL(fileURLWithPath: destDir).lastPathComponent
+        let calendarTitle = meetingCalendarTitle
+        meetingRecordingDir = nil
+        meetingCalendarTitle = nil
         try? FileManager.default.createDirectory(atPath: destDir, withIntermediateDirectories: true)
         let mixedPath = destDir + "/meeting.m4a"
 
@@ -275,12 +298,14 @@ final class JobStore: ObservableObject {
         // накладывается друг на друга и видно, кто говорит. Удалим их сразу
         // после успешной транскрибации.
         let fm = FileManager.default
-        try? fm.removeItem(atPath: destDir + "/" + MeetingTracks.systemTrackName)
-        try? fm.moveItem(at: systemURL, to: URL(fileURLWithPath: destDir + "/" + MeetingTracks.systemTrackName))
-        if let micURL {
-            try? fm.removeItem(atPath: destDir + "/" + MeetingTracks.micTrackName)
-            try? fm.moveItem(at: micURL, to: URL(fileURLWithPath: destDir + "/" + MeetingTracks.micTrackName))
-        } else {
+        for (url, name) in [(systemURL, MeetingTracks.systemTrackName), (micURL, MeetingTracks.micTrackName)] {
+            guard let url else { continue }
+            let target = destDir + "/" + name
+            if url.path == target { continue }
+            try? fm.removeItem(atPath: target)
+            try? fm.moveItem(at: url, to: URL(fileURLWithPath: target))
+        }
+        if micURL == nil {
             // Без дорожки микрофона встреча запишется «в одну сторону»: будут
             // слышны собеседники, но не свой голос. Обычно это неразрешённый
             // доступ к микрофону.
@@ -295,6 +320,7 @@ final class JobStore: ObservableObject {
         var job = Job(sourcePath: mixedPath)
         job.name = safeName
         job.isMeetingRecording = true
+        job.calendarTitle = calendarTitle
         jobs.append(job)
         appendLog("Запись встречи добавлена в очередь: \(safeName)")
         saveHistory()
@@ -442,13 +468,19 @@ final class JobStore: ObservableObject {
         JobStore.migrateLegacySettingsIfNeeded()
         migrateLegacyLayoutIfNeeded()
         createDirectories()
+        deployBundledScripts()
+        promptSetupOnFirstRun()
         loadHistory()
         backfillMetaFiles()
         adoptJobsFoundOnDisk()
         adoptInterruptedRecordings()
         normalizeStagesOnLaunch()
         MeetingLinkDetector.customPatterns = customMeetingDomains.map { ($0.domain, $0.label) }
-        startMeetingDetection()
+        // Детектор встреч запускаем следующим проходом цикла, а не прямо здесь:
+        // хранилище создаётся, пока SwiftUI строит главное окно, и если в этот
+        // момент в календаре шла встреча, окно предложения записи открывалось
+        // посреди построения — macOS роняла приложение при каждом запуске.
+        DispatchQueue.main.async { [weak self] in self?.startMeetingDetection() }
         refreshNotionAvailability()
         MeetingNotifier.shared.prepare(store: self)
 
@@ -492,6 +524,68 @@ final class JobStore: ObservableObject {
         layout.createDirectories()
     }
 
+    // Первый запуск на чужой машине: сразу показываем, чего не хватает.
+    // Иначе человек видит пустое окно и узнаёт о недостающих компонентах
+    // только когда нажмёт «Записать встречу» — посреди начавшейся встречи.
+    private func promptSetupOnFirstRun() {
+        let key = "didShowFirstRunSetup"
+        guard !UserDefaults.standard.bool(forKey: key) else { return }
+        UserDefaults.standard.set(true, forKey: key)
+
+        // Не во время построения окна: открытый в этот момент лист роняет
+        // приложение — на этом уже обжигались с предложением записи.
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            let missing = self.missingDependencies(requireClaude: true, requireYtDlp: true)
+            guard !missing.isEmpty else { return }
+            self.pendingDependencies = missing
+            self.showDependencySheet = true
+        }
+    }
+
+    // MARK: - Раскладка скриптов
+
+    // Скрипты лежат внутри приложения и раскладываются в папку данных при
+    // запуске. Благодаря этому .app самодостаточен: его можно отдать другому
+    // человеку, и у него всё заработает без возни с файлами. Перезаписываем
+    // только то, что отличается от вложенного в приложение, — чужие файлы в
+    // этой папке не трогаем.
+    private func deployBundledScripts() {
+        guard let bundledDir = Bundle.main.resourceURL?.appendingPathComponent("scripts"),
+              FileManager.default.fileExists(atPath: bundledDir.path) else { return }
+
+        // Если человек указал в настройках свою папку со скриптами, значит он
+        // правит их сам — подменять их приложение не вправе.
+        guard scriptsDir == layout.scriptsDir else { return }
+
+        let fm = FileManager.default
+        let names = (try? fm.contentsOfDirectory(atPath: bundledDir.path)) ?? []
+
+        var bundled: [String: String] = [:]
+        var installed: [String: String] = [:]
+        for name in names {
+            guard let content = try? String(contentsOf: bundledDir.appendingPathComponent(name), encoding: .utf8)
+            else { continue }
+            bundled[name] = content
+            installed[name] = try? String(contentsOfFile: scriptsDir + "/" + name, encoding: .utf8)
+        }
+
+        let outdated = ScriptSync.outdatedNames(bundled: bundled, installed: installed)
+        guard !outdated.isEmpty else { return }
+
+        try? fm.createDirectory(atPath: scriptsDir, withIntermediateDirectories: true)
+        for name in outdated {
+            let destination = scriptsDir + "/" + name
+            do {
+                try bundled[name]?.write(toFile: destination, atomically: true, encoding: .utf8)
+                try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: destination)
+            } catch {
+                appendLog("Не удалось разложить скрипт \(name): \(error.localizedDescription)")
+            }
+        }
+        appendLog("Скрипты обновлены из приложения: \(outdated.count) шт.")
+    }
+
     // MARK: - Переименование встречи
 
     @Published var renameJobID: UUID? = nil
@@ -504,9 +598,15 @@ final class JobStore: ObservableObject {
     }
 
     func confirmRename() {
-        guard let jobID = renameJobID, let index = jobs.firstIndex(where: { $0.id == jobID }) else { return }
-        let newName = JobRename.sanitized(renameText)
+        guard let jobID = renameJobID else { return }
+        let newName = renameText
         renameJobID = nil
+        renameJob(jobID: jobID, to: newName)
+    }
+
+    private func renameJob(jobID: UUID, to proposedName: String) {
+        guard let index = jobs.firstIndex(where: { $0.id == jobID }) else { return }
+        let newName = JobRename.sanitized(proposedName)
         guard !newName.isEmpty, newName != jobs[index].name else { return }
 
         let oldName = jobs[index].name
@@ -530,11 +630,39 @@ final class JobStore: ObservableObject {
             }
         }
 
+        // Папка с исходной записью встречи тоже названа по встрече. Если её
+        // не перенести, при следующем запуске она выглядит как незнакомая
+        // прерванная запись и встреча уходит распознаваться заново.
+        let oldRecording = recordingsDir + "/" + oldName
+        let newRecording = recordingsDir + "/" + newName
+        var isDirectory: ObjCBool = false
+        if fm.fileExists(atPath: oldRecording, isDirectory: &isDirectory), isDirectory.boolValue,
+           !fm.fileExists(atPath: newRecording),
+           (try? fm.moveItem(atPath: oldRecording, toPath: newRecording)) != nil {
+            jobs[index].sourcePath = JobRename.movedPath(jobs[index].sourcePath,
+                                                        fromFolder: oldRecording,
+                                                        toFolder: newRecording)
+        }
+
         jobs[index].name = newName
         jobs[index].updatedAt = Date()
         saveHistory()
         JobFolder.writeMeta(for: jobs[index])
         appendLog("Встреча переименована: «\(oldName)» → «\(newName)».")
+    }
+
+    // MARK: - Название по сути разговора
+
+    // «Встреча 05.10.2026 18-11» ничего не говорит о том, что обсуждали, и в
+    // списке из десятка таких строк найти нужную невозможно. Сборщик саммари
+    // возвращает короткое название по сути разговора, и оно подставляется в
+    // список — но только если человек не назвал встречу сам.
+    private func applyTitleFromSummary(jobID: UUID, scriptOutput: String) {
+        guard let job = jobs.first(where: { $0.id == jobID }) else { return }
+        guard JobNaming.isAutomaticName(job.name) else { return }
+        let title = OutputParsing.downloadedTitle(in: scriptOutput)
+        let name = JobNaming.compose(automaticName: job.name, calendarTitle: job.calendarTitle, title: title)
+        renameJob(jobID: jobID, to: name)
     }
 
     // MARK: - Подхват оборванных записей
@@ -598,6 +726,8 @@ final class JobStore: ObservableObject {
         var job = Job(sourcePath: mixed)
         job.name = name
         job.isMeetingRecording = true
+        job.calendarTitle = (try? String(contentsOfFile: folder + "/" + MeetingFolderName.calendarFileName, encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         jobs.append(job)
         appendLog("Найдена прерванная запись «\(name)» — вернул её в обработку.")
         saveHistory()
@@ -1448,6 +1578,7 @@ final class JobStore: ObservableObject {
             return
         }
 
+        applyTitleFromSummary(jobID: jobID, scriptOutput: result.output)
         updateJob(jobID) { $0.stage = .done; $0.lastError = nil; $0.lastErrorDetail = nil }
         // Показываем результат сразу: иначе задача просто исчезает из очереди,
         // и непонятно, куда делась работа.
@@ -1548,59 +1679,45 @@ final class JobStore: ObservableObject {
 
     // MARK: - Доступность выгрузки
 
-    // Кнопка выгрузки в Notion включается, только если Notion действительно
-    // подключён к Claude Code: иначе нажатие заканчивалось бы невнятной
-    // ошибкой в логе через полминуты.
-    @Published var isNotionConnected: Bool = false
-    @Published var isCheckingNotion: Bool = false
+    // Выгрузка идёт по токену Notion: он лежит в Связке ключей, а кнопка
+    // включается, только если токен задан и Notion его принимает. Раньше
+    // доступность определялась по списку подключений Claude Code — и врала:
+    // подключение там числилось, а сессии приложения оно не доставалось.
+    static let notionKeychainService = "MeetingApp Notion API"
 
-    func refreshNotionAvailability() {
-        guard !isCheckingNotion else { return }
-        isCheckingNotion = true
-        Task.detached { [weak self] in
-            let connected = JobStore.detectNotionConnection()
-            await MainActor.run {
-                self?.isNotionConnected = connected
-                self?.isCheckingNotion = false
-                self?.appendLog(connected
-                                ? "Notion подключён — выгрузка доступна."
-                                : "Notion не найден среди подключений Claude Code — кнопка выгрузки недоступна.")
-            }
+    @Published var notionToken: String = KeychainStore.read(service: JobStore.notionKeychainService) ?? "" {
+        didSet {
+            guard notionToken != oldValue else { return }
+            KeychainStore.write(notionToken, service: JobStore.notionKeychainService)
         }
     }
 
-    // Спрашиваем сам claude: список подключённых MCP-серверов и их состояние.
-    nonisolated private static func detectNotionConnection() -> Bool {
-        let candidates = ["/opt/homebrew/bin/claude", "/usr/local/bin/claude",
-                          NSHomeDirectory() + "/.npm-global/bin/claude"]
-        guard let path = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
-            return false
+    @Published var isNotionConnected: Bool = false
+    @Published var isCheckingNotion: Bool = false
+
+    var hasNotionToken: Bool {
+        return !notionToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    func refreshNotionAvailability() {
+        guard !isCheckingNotion else { return }
+        let token = notionToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty else {
+            isNotionConnected = false
+            return
         }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: path)
-        process.arguments = ["mcp", "list"]
 
-        // Приложению, запущенному из Finder, достаётся скудный PATH: там нет
-        // ни Homebrew, ни node, через который работает claude. Без этого
-        // проверка молча не находила Notion, и кнопка выгрузки оставалась
-        // недоступной, хотя в терминале всё работало.
-        var environment = ProcessInfo.processInfo.environment
-        let extraPaths = "/opt/homebrew/bin:/usr/local/bin:" + NSHomeDirectory() + "/.npm-global/bin"
-        environment["PATH"] = extraPaths + ":" + (environment["PATH"] ?? "/usr/bin:/bin")
-        process.environment = environment
-
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = Pipe()
-        do { try process.run() } catch { return false }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        let output = String(data: data, encoding: .utf8) ?? ""
-        return output.components(separatedBy: .newlines).contains { line in
-            let lower = line.lowercased()
-            // Строка вида «claude.ai Notion: https://… - ✔ Connected»
-            return lower.contains("notion") && !lower.contains("needs authentication")
-                && (line.contains("✔") || lower.contains("connected"))
+        isCheckingNotion = true
+        Task {
+            do {
+                try await NotionClient(token: token).checkToken()
+                isNotionConnected = true
+                appendLog("Notion: токен принят, выгрузка доступна.")
+            } catch {
+                isNotionConnected = false
+                appendLog("Notion: \(error.localizedDescription)")
+            }
+            isCheckingNotion = false
         }
     }
 
@@ -1631,33 +1748,66 @@ final class JobStore: ObservableObject {
         guard !exportingJobIDs.contains(jobID) else { return }
         exportingJobIDs.insert(jobID)
 
+        if target == "notion" {
+            exportToNotion(jobID: jobID, name: job.name, date: job.createdAt, summaryPath: summary)
+        } else {
+            exportToNotes(jobID: jobID, name: job.name, summaryPath: summary)
+        }
+    }
+
+    // Notion. Приложение пишет страницу само, по токену: ни Claude, ни скрипт
+    // здесь больше не участвуют — лишнее звено как раз и ломало выгрузку.
+    private func exportToNotion(jobID: UUID, name: String, date: Date, summaryPath: String) {
+        let token = notionToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        let databaseName = notionDatabaseName
+        let logPath = URL(fileURLWithPath: summaryPath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("export.log").path
+
         Task {
-            var arguments = [target, summary, job.name]
-            if target == "notion" {
-                arguments.append(notionDatabaseName)
-                arguments.append(job.transcriptPath ?? "")
+            appendLog("Выгружаю саммари в Notion: \(name)")
+            do {
+                let markdown = try String(contentsOfFile: summaryPath, encoding: .utf8)
+                let blocks = NotionMarkdown.blocksForPage(markdown: markdown)
+                let client = NotionClient(token: token)
+                let database = try await client.findDatabase(named: databaseName)
+                let link = try await client.createPage(in: database, title: name, date: date, blocks: blocks)
+
+                updateJob(jobID) { $0.notionURL = link }
+                appendLog("Выгрузка завершена: \(name) → \(link)")
+                writeExportLog(path: logPath, text: "Страница создана: \(link)")
+            } catch {
+                // Подробности кладём рядом с саммари: в журнале приложения они
+                // теряются, а при разборе «почему не выгрузилось» нужны именно они.
+                let message = (error as? NotionError)?.errorDescription ?? error.localizedDescription
+                appendLog("Не удалось выгрузить в Notion: \(message)")
+                writeExportLog(path: logPath, text: "Ошибка выгрузки: \(message)")
             }
-            appendLog("Выгружаю саммари (\(target)): \(job.name)")
-            let result = await runScript(name: "export_summary.sh", arguments: arguments, jobID: nil)
+            exportingJobIDs.remove(jobID)
+        }
+    }
+
+    // Заметки — по-прежнему скриптом: там всё держится на AppleScript.
+    private func exportToNotes(jobID: UUID, name: String, summaryPath: String) {
+        Task {
+            appendLog("Выгружаю саммари в Заметки: \(name)")
+            let result = await runScript(name: "export_summary.sh",
+                                         arguments: ["notes", summaryPath, name],
+                                         jobID: nil)
             exportingJobIDs.remove(jobID)
 
-            if result.exitCode == 4 {
-                appendLog("Выгрузка в Notion не уложилась в отведённое время и была прервана. Подробный вывод — в файле export.log рядом с саммари.")
-                return
-            }
-
             if result.exitCode == 0 {
-                if target == "notion", let link = extractNotionURL(from: result.output) {
-                    updateJob(jobID) { $0.notionURL = link }
-                }
-                if target == "notes" {
-                    updateJob(jobID) { $0.savedToNotes = true }
-                }
-                appendLog("Выгрузка завершена: \(job.name)")
+                updateJob(jobID) { $0.savedToNotes = true }
+                appendLog("Выгрузка завершена: \(name)")
             } else {
-                appendLog("Не удалось выгрузить (\(target)): \(job.name)")
+                appendLog("Не удалось сохранить в Заметки: \(name)")
             }
         }
+    }
+
+    private func writeExportLog(path: String, text: String) {
+        let stamp = DateFormatter.localizedString(from: Date(), dateStyle: .short, timeStyle: .medium)
+        try? ("=== \(stamp) ===\n" + text + "\n").write(toFile: path, atomically: true, encoding: .utf8)
     }
 
     // Показать файл саммари в Finder — самый простой способ забрать результат.
@@ -1870,10 +2020,6 @@ final class JobStore: ObservableObject {
         } catch {
             appendLog("Не удалось переместить исходник в папку processed: \(error.localizedDescription)")
         }
-    }
-
-    private func extractNotionURL(from output: String) -> String? {
-        return OutputParsing.notionURL(in: output)
     }
 
     private func extractDownloadedTitle(from output: String) -> String? {

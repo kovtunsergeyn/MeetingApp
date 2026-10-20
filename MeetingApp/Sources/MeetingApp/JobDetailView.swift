@@ -154,14 +154,15 @@ struct JobDetailView: View {
                             }
                             .fixedSize()
                         }
-                        // Кнопка больше не блокируется проверкой подключения:
-                        // подключения claude.ai не видны в списке серверов,
-                        // который возвращает claude mcp list, и проверка гасила
-                        // кнопку даже тогда, когда выгрузка исправно работала.
-                        // Если Notion и правда не подключён, выгрузка завершится
-                        // ошибкой с понятным сообщением.
-                        .disabled(store.exportingJobIDs.contains(job.id))
-                        .help("Выгрузить саммари в Notion")
+                        // Без токена выгружать некуда, и это видно заранее.
+                        // А вот гадать по доступности Notion кнопка больше не
+                        // пытается: любая другая ошибка — права на базу,
+                        // отозванный токен — приходит из самого Notion
+                        // понятным сообщением после нажатия.
+                        .disabled(store.exportingJobIDs.contains(job.id) || !store.hasNotionToken)
+                        .help(store.hasNotionToken
+                              ? "Выгрузить саммари в Notion"
+                              : "Укажите токен Notion: Настройки → Интеграции")
 
                         Button {
                             store.exportSummary(jobID: job.id, to: "notes")

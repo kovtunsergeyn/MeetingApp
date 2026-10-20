@@ -18,12 +18,13 @@ final class AudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     private var timer: Timer?
     private var outputURL: URL?
 
-    func start() {
+    // destination — куда писать; без него запись идёт во временную папку.
+    func start(to destination: URL? = nil) {
         AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
             Task { @MainActor in
                 guard let self else { return }
                 if granted {
-                    self.beginRecording()
+                    self.beginRecording(to: destination)
                 } else {
                     self.permissionDenied = true
                 }
@@ -31,11 +32,10 @@ final class AudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         }
     }
 
-    private func beginRecording() {
-        let dir = FileManager.default.temporaryDirectory
+    private func beginRecording(to destination: URL?) {
         let name = "запись-микрофона-" + ISO8601DateFormatter().string(from: Date())
             .replacingOccurrences(of: ":", with: "-") + ".wav"
-        let url = dir.appendingPathComponent(name)
+        let url = destination ?? FileManager.default.temporaryDirectory.appendingPathComponent(name)
         outputURL = url
 
         // Несжатый звук: прерванный AAC-файл читается плохо или не читается

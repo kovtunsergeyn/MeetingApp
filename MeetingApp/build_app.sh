@@ -111,6 +111,12 @@ cp Resources/AppIcon.icns "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
 # Чтобы добавить язык, достаточно создать Resources/Localization/<код>.lproj
 # с файлом Localizable.strings — сборка подхватит его автоматически.
 cp -R Resources/Localization/*.lproj "$APP_BUNDLE/Contents/Resources/"
+# Скрипты едут внутри приложения: так его можно просто отдать другому человеку,
+# и так они не разъезжаются с бинарником при обновлении. Приложение
+# раскладывает их в папку данных само при запуске.
+mkdir -p "$APP_BUNDLE/Contents/Resources/scripts"
+cp scripts/*.sh scripts/*.py "$APP_BUNDLE/Contents/Resources/scripts/"
+chmod +x "$APP_BUNDLE/Contents/Resources/scripts/"*
 
 cat > "$APP_BUNDLE/Contents/Info.plist" << EOF
 <?xml version="1.0" encoding="UTF-8"?>

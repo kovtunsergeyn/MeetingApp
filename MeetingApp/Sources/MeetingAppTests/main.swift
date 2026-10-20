@@ -303,6 +303,11 @@ group("Обработанная встреча не подхватывается
           "настоящая прерванная запись подхватывается")
     check(!InterruptedRecording.shouldAdopt(folderName: name, layout: layout, knownNames: [name]),
           "встреча, уже известная приложению, не дублируется")
+    // Встречу переименовали, дописав тему, а папка записи осталась со старым
+    // именем: раньше её принимали за прерванную и распознавали заново.
+    check(!InterruptedRecording.shouldAdopt(folderName: "Встреча 01.01.2026 11-00", layout: layout,
+                                            knownNames: ["Встреча 01.01.2026 11-00 - Планёрка"]),
+          "переименованная встреча не подхватывается заново")
 }
 
 group("Удаление вычищает записи задачи из всех папок") {
@@ -436,6 +441,123 @@ group("Время в проигрывателе") {
     // ползунок раньше ронял приложение.
     equal(TimeFormat.mmss(.nan), "00:00", "нечисловая длительность")
     equal(TimeFormat.mmss(-5), "00:00", "отрицательная длительность")
+}
+
+// MARK: - Название встречи по сути разговора
+
+group("Название встречи") {
+    check(JobNaming.isAutomaticName("Встреча 05.10.2026 18-11"), "имя по дате считается автоматическим")
+    check(JobNaming.isAutomaticName("Запись 05.10.2026 18:11"), "запись по дате тоже")
+    check(!JobNaming.isAutomaticName("Встреча 05.10.2026 18-11 - Планы на квартал"),
+          "имя с темой уже не автоматическое")
+    // Человек назвал встречу сам — его название главнее любого придуманного.
+    check(!JobNaming.isAutomaticName("Разбор задач"), "название человека не трогаем")
+
+    let auto = "Встреча 05.10.2026 18-11"
+    equal(JobNaming.compose(automaticName: auto, title: "Планы на квартал"),
+          "Встреча 05.10.2026 18-11 - Планы на квартал", "тема дописывается к дате через дефис")
+    equal(JobNaming.compose(automaticName: auto, title: "«Планы на квартал»."),
+          "Встреча 05.10.2026 18-11 - Планы на квартал", "кавычки и точка убираются")
+    equal(JobNaming.compose(automaticName: auto, title: "   "), auto, "пустая тема ничего не меняет")
+    equal(JobNaming.compose(automaticName: auto, title: nil), auto, "без темы остаётся дата")
+
+    // Событие календаря — контекст встречи: что это за встреча вообще.
+    equal(JobNaming.compose(automaticName: auto, calendarTitle: "Планёрка", title: "Сроки по выпуску"),
+          "Встреча 05.10.2026 18-11 - Планёрка - Сроки по выпуску", "событие календаря идёт перед темой")
+    equal(JobNaming.compose(automaticName: auto, calendarTitle: "Планёрка", title: nil),
+          "Встреча 05.10.2026 18-11 - Планёрка", "без темы хватает события календаря")
+    equal(JobNaming.compose(automaticName: auto, calendarTitle: "Планёрка", title: "планёрка"),
+          "Встреча 05.10.2026 18-11 - Планёрка", "тема, повторяющая событие, второй раз не пишется")
+    equal(JobNaming.compose(automaticName: auto, calendarTitle: "  ", title: "Сроки"),
+          "Встреча 05.10.2026 18-11 - Сроки", "пустое событие не оставляет лишнего дефиса")
+
+    check(JobNaming.extends(auto + " - Планёрка", base: auto), "имя с темой продолжает автоматическое")
+    check(JobNaming.extends(auto + " — Планёрка", base: auto), "и со старым длинным тире тоже")
+    check(!JobNaming.extends("Встреча 05.10.2026 18-111", base: auto), "другое время — другая встреча")
+
+    let date = DateComponents(calendar: Calendar.current, year: 2026, month: 10, day: 5, hour: 18, minute: 11).date!
+    equal(MeetingFolderName.forRecording(startedAt: date), auto, "папка записи называется как автоматическое имя")
+}
+
+// MARK: - Саммари в блоки Notion
+
+group("Разбор markdown для Notion") {
+    let markdown = """
+    # Встреча 05.10.2026 18-11
+
+    ## Решения
+
+    - Первый пункт
+    - Второй пункт с **важным** словом
+
+    1. Шаг один
+    2. Шаг два
+
+    Обычный абзац,
+    разбитый переносом.
+
+    ---
+    """
+    let blocks = NotionMarkdown.blocks(from: markdown)
+    equal(blocks.map { $0.type },
+          ["heading_1", "heading_2", "bulleted_list_item", "bulleted_list_item",
+           "numbered_list_item", "numbered_list_item", "paragraph", "divider"],
+          "типы блоков по порядку")
+    equal(blocks[6].runs.first?.text, "Обычный абзац, разбитый переносом.",
+          "мягкий перенос не рвёт абзац")
+
+    // Название страницы и так стоит в заголовке записи — дублировать его
+    // первым блоком не нужно.
+    equal(NotionMarkdown.blocksForPage(markdown: markdown).first?.type, "heading_2",
+          "первый заголовок уходит в название страницы")
+
+    equal(NotionMarkdown.runs(from: "обычный **жирный** и `код`"),
+          [NotionMarkdown.TextRun(text: "обычный "),
+           NotionMarkdown.TextRun(text: "жирный", bold: true),
+           NotionMarkdown.TextRun(text: " и "),
+           NotionMarkdown.TextRun(text: "код", code: true)],
+          "жирный текст и код внутри строки")
+
+    equal(NotionMarkdown.runs(from: "смотри [отчёт](https://example.com/report)"),
+          [NotionMarkdown.TextRun(text: "смотри "),
+           NotionMarkdown.TextRun(text: "отчёт", link: "https://example.com/report")],
+          "ссылка в тексте")
+
+    // Notion не принимает отрезок длиннее 2000 символов и отказывает всему
+    // запросу: страница тогда создавалась пустой.
+    let longWord = String(repeating: "слово ", count: 600)
+    let longRuns = NotionMarkdown.runs(from: longWord)
+    check(longRuns.count > 1, "длинный текст делится на части")
+    check(longRuns.allSatisfy { $0.text.count <= NotionMarkdown.maxTextLength },
+          "каждая часть укладывается в предел Notion")
+
+    // Тело запроса должно быть ровно таким, каким его ждёт API.
+    let payload = NotionMarkdown.payload(for: NotionMarkdown.Block(
+        type: "bulleted_list_item",
+        runs: [NotionMarkdown.TextRun(text: "пункт", bold: true)]))
+    let data = try! JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+    equal(String(data: data, encoding: .utf8)!,
+          #"{"bulleted_list_item":{"rich_text":[{"annotations":{"bold":true,"code":false,"italic":false},"text":{"content":"пункт"},"type":"text"}]},"object":"block","type":"bulleted_list_item"}"#,
+          "тело запроса для пункта списка")
+}
+
+// MARK: - Скрипты внутри приложения
+
+group("Раскладка скриптов из приложения") {
+    let bundled = ["transcribe.sh": "новое", "summarize.sh": "одинаковое"]
+
+    equal(ScriptSync.outdatedNames(bundled: bundled, installed: [:]),
+          ["summarize.sh", "transcribe.sh"], "на чистой машине раскладываются все")
+    equal(ScriptSync.outdatedNames(bundled: bundled, installed: bundled), [],
+          "совпадающие скрипты не трогаем")
+    equal(ScriptSync.outdatedNames(bundled: bundled,
+                                   installed: ["transcribe.sh": "старое", "summarize.sh": "одинаковое"]),
+          ["transcribe.sh"], "обновляется только изменившийся скрипт")
+    // В папке со скриптами может лежать и чужое — стирать его приложение не вправе.
+    equal(ScriptSync.outdatedNames(bundled: bundled,
+                                   installed: ["transcribe.sh": "новое", "summarize.sh": "одинаковое",
+                                               "моё.sh": "руками"]),
+          [], "посторонние файлы в папке не мешают")
 }
 
 // MARK: - Итог

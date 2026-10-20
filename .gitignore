@@ -11,3 +11,6 @@ MeetingApp/MeetingApp-Test.app/
 *.mov
 .DS_Store
 **/.DS_Store
+
+# Локальные настройки Claude Code: машинное, в репозиторий не едет
+.claude/

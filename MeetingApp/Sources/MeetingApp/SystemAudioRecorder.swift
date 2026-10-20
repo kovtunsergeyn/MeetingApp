@@ -21,7 +21,7 @@ final class SystemAudioRecorder: NSObject, ObservableObject, SCStreamDelegate {
     private var sessionStarted = false
     private let sampleQueue = DispatchQueue(label: "com.meetingapp.system-audio")
 
-    func start() async -> URL? {
+    func start(to url: URL) async -> URL? {
         lastErrorMessage = nil
         needsRestartForPermission = false
 
@@ -65,8 +65,7 @@ final class SystemAudioRecorder: NSObject, ObservableObject, SCStreamDelegate {
             // сжатый файл окажется нечитаемым целиком, а из несжатого
             // сохранится всё, что успело лечь на диск. Сжимаем потом, когда
             // расшифровка уже готова.
-            let url = FileManager.default.temporaryDirectory
-                .appendingPathComponent("system-audio-\(UUID().uuidString).caf")
+            try? FileManager.default.removeItem(at: url)
             let writer = try AVAssetWriter(outputURL: url, fileType: .caf)
             let settings: [String: Any] = [
                 AVFormatIDKey: kAudioFormatLinearPCM,

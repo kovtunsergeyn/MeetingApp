@@ -25,6 +25,11 @@ public struct Job: Identifiable, Codable, Equatable {
     // Саммари уже выгружено в Заметки — чтобы не отправлять дважды.
     public var savedToNotes: Bool = false
 
+    // Как событие называлось в календаре, когда шла запись («Планёрка»,
+    // «Созвон с подрядчиком»). Это контекст встречи, который из одного
+    // разговора не восстановить: по нему встречи одной серии называются
+    // одинаково.
+    public var calendarTitle: String? = nil
 
     // Разбор истории терпим к отсутствующим полям. Историю пишет само
     // приложение, и когда в задачу добавляется новое свойство, в старых файлах
@@ -45,6 +50,7 @@ public struct Job: Identifiable, Codable, Equatable {
         lastErrorDetail = try container.decodeIfPresent(String.self, forKey: .lastErrorDetail)
         isMeetingRecording = try container.decodeIfPresent(Bool.self, forKey: .isMeetingRecording) ?? false
         savedToNotes = try container.decodeIfPresent(Bool.self, forKey: .savedToNotes) ?? false
+        calendarTitle = try container.decodeIfPresent(String.self, forKey: .calendarTitle)
     }
 
     public init(sourcePath: String) {

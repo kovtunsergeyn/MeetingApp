@@ -138,27 +138,43 @@ struct IntegrationsSettingsPane: View {
     var body: some View {
         Form {
             Section("Notion") {
+                // Токен вводится здесь, а хранится в Связке ключей: это ключ от
+                // рабочего пространства, в настройках приложения ему не место.
+                SecureField("Токен доступа:", text: Binding(
+                    get: { store.notionToken },
+                    set: { store.notionToken = $0 }
+                ), prompt: Text("ntn_…"))
+
                 TextField("База для саммари:", text: Binding(
                     get: { store.notionDatabaseName },
                     set: { store.notionDatabaseName = $0 }
                 ), prompt: Text("Саммари встреч"))
+
                 LabeledContent("Состояние:") {
                     HStack(spacing: 6) {
                         if store.isCheckingNotion {
                             ProgressView().controlSize(.small)
                             Text("проверяю…")
                         } else if store.isNotionConnected {
-                            Label("виден в списке подключений", systemImage: "checkmark.circle.fill")
+                            Label("токен принят", systemImage: "checkmark.circle.fill")
                                 .foregroundStyle(.green)
+                        } else if store.hasNotionToken {
+                            Label("Notion токен не принял", systemImage: "exclamationmark.triangle")
+                                .foregroundStyle(.orange)
                         } else {
-                            Label("в списке подключений не найден", systemImage: "questionmark.circle")
+                            Label("токен не задан", systemImage: "questionmark.circle")
                                 .foregroundStyle(.secondary)
                         }
                         Button("Проверить") { store.refreshNotionAvailability() }
                             .controlSize(.small)
+                            .disabled(!store.hasNotionToken)
                     }
                 }
-                Text("Если базы с таким именем нет, она будет создана при первой выгрузке. Подключение к Notion берётся из Claude Code. Проверка носит справочный характер: подключения claude.ai в списке серверов не отображаются, но выгрузка при этом работает.")
+
+                Text("Токен берётся в Notion: Settings → Developer → Personal access tokens → New token. "
+                     + "При создании токена дай ему доступ к базе саммари — Notion показывает приложению "
+                     + "только то, что разрешено явно. Если базы с таким именем нет, выгрузка скажет об этом: "
+                     + "создавать базы приложение не станет.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
