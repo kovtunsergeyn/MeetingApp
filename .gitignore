@@ -11,3 +11,6 @@ MeetingApp/MeetingApp-Test.app/
 *.mp4
 *.mov
 
+
+# Локальные настройки Claude Code: машинное, в репозиторий не едет
+.claude/
