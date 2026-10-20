@@ -17,9 +17,13 @@ public struct AppLayout {
     public var transcriptsDir: String { return baseDir + "/transcripts" }
     public var processedDir: String { return baseDir + "/processed" }
     public var scriptsDir: String { return baseDir + "/scripts" }
+    // Сюда приложение складывает ffmpeg, whisper-cli и yt-dlp. Свои копии, а не
+    // системные: тогда человеку, которому приложение передали, не нужны ни
+    // Homebrew, ни Node, ни Xcode — поставил .app и работает.
+    public var binDir: String { return baseDir + "/bin" }
 
     public var allDirectories: [String] {
-        return [baseDir, processedDir, transcriptsDir, recordingsDir, modelsDir]
+        return [baseDir, processedDir, transcriptsDir, recordingsDir, modelsDir, binDir]
     }
 
     public func createDirectories() {

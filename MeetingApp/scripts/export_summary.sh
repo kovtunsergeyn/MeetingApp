@@ -19,7 +19,12 @@ if [ -z "$TARGET" ] || [ -z "$SUMMARY" ] || [ ! -s "$SUMMARY" ]; then
   exit 1
 fi
 
-export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.npm-global/bin:/usr/bin:/bin:$PATH"
+# Свои копии компонентов лежат в <папка данных>/bin — папку находим по месту
+# самого скрипта, поэтому тестовая и рабочая сборки берут каждая своё. Дальше
+# идут системные пути: если у человека уже стоят ffmpeg или whisper, сгодятся
+# и они. $HOME/.local/bin — туда ставит себя Claude Code.
+BIN_DIR="$(cd "$(dirname "$0")/.." && pwd)/bin"
+export PATH="$BIN_DIR:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.npm-global/bin:/usr/bin:/bin:$PATH"
 
 case "$TARGET" in
   notes)

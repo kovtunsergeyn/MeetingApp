@@ -11,19 +11,19 @@ struct Dependency: Identifiable, Equatable {
     static let ffmpeg = Dependency(
         id: "ffmpeg",
         title: "ffmpeg",
-        details: "Извлекает звуковую дорожку из видео и аудиофайлов."
+        details: "Извлекает звуковую дорожку из видео и аудиофайлов. Готовая сборка, скачивается в папку приложения."
     )
 
     static let whisper = Dependency(
         id: "whisper",
         title: "whisper-cli (whisper.cpp)",
-        details: "Распознаёт речь локально, с ускорением на Apple Silicon."
+        details: "Распознаёт речь локально, с ускорением на видеокарте. Скачивается в папку приложения."
     )
 
     static let ytdlp = Dependency(
         id: "ytdlp",
         title: "yt-dlp",
-        details: "Скачивает аудио с YouTube по ссылке."
+        details: "Скачивает аудио с YouTube по ссылке. Скачивается в папку приложения."
     )
 
     static let vad = Dependency(
@@ -43,7 +43,7 @@ struct Dependency: Identifiable, Equatable {
     static let claude = Dependency(
         id: "claude",
         title: "Claude Code",
-        details: "Делает саммари и сохраняет запись в Notion/Заметки. Установка и вход в аккаунт — автоматически: поставится через npm (Node.js через Homebrew, если его нет), затем откроется браузер для входа в Anthropic."
+        details: "Собирает саммари по транскрипту. Ставится родным установщиком Anthropic, затем откроется браузер для входа в аккаунт."
     )
 
     var isAutoInstallable: Bool {

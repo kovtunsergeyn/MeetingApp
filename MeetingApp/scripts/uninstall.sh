@@ -19,7 +19,12 @@ if [ "$MODE" != "--dry-run" ] && [ "$MODE" != "--apply" ]; then
   exit 1
 fi
 
-export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.npm-global/bin:/usr/bin:/bin:$PATH"
+# Свои копии компонентов лежат в <папка данных>/bin — папку находим по месту
+# самого скрипта, поэтому тестовая и рабочая сборки берут каждая своё. Дальше
+# идут системные пути: если у человека уже стоят ffmpeg или whisper, сгодятся
+# и они. $HOME/.local/bin — туда ставит себя Claude Code.
+BIN_DIR="$(cd "$(dirname "$0")/.." && pwd)/bin"
+export PATH="$BIN_DIR:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.npm-global/bin:/usr/bin:/bin:$PATH"
 
 run() {
   if [ "$MODE" = "--dry-run" ]; then
@@ -54,23 +59,23 @@ for COMPONENT in "$@"; do
   case "$COMPONENT" in
     ffmpeg)
       echo "ffmpeg:"
-      run brew uninstall --ignore-dependencies ffmpeg
+      remove_path "$BIN_DIR/ffmpeg"
+      remove_path "$BIN_DIR/ffprobe"
+      remove_path "$BIN_DIR/ffmpeg.LICENSE"
       ;;
     whisper)
       echo "whisper.cpp:"
-      run brew uninstall --ignore-dependencies whisper-cpp
+      remove_path "$BIN_DIR/whisper-cli"
+      remove_path "$BIN_DIR/whisper-cli.LICENSE"
       ;;
     ytdlp)
       echo "yt-dlp:"
-      run brew uninstall --ignore-dependencies yt-dlp
-      ;;
-    node)
-      echo "Node.js:"
-      run brew uninstall --ignore-dependencies node
+      remove_path "$BIN_DIR/yt-dlp"
       ;;
     claude)
       echo "Claude Code:"
-      run npm uninstall -g @anthropic-ai/claude-code
+      remove_path "$HOME/.local/bin/claude"
+      remove_path "$HOME/.local/share/claude"
       ;;
     models:*)
       echo "Языковые модели whisper:"

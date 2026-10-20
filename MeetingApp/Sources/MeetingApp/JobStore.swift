@@ -1384,7 +1384,12 @@ final class JobStore: ObservableObject {
     }
 
     private func which(_ tool: String) -> String? {
+        // Сначала свои копии в папке данных: приложение ставит их само и
+        // отвечает за их версию. Системные пути — следом, чтобы уже
+        // установленным ffmpeg или whisper тоже можно было пользоваться.
         let candidates = [
+            layout.binDir + "/" + tool,
+            NSHomeDirectory() + "/.local/bin/" + tool,
             "/opt/homebrew/bin/" + tool,
             "/usr/local/bin/" + tool,
             "/usr/bin/" + tool,
@@ -1934,7 +1939,6 @@ final class JobStore: ObservableObject {
             "ffmpeg": "ffmpeg (конвертация аудио и видео)",
             "whisper": "whisper.cpp (распознавание речи)",
             "ytdlp": "yt-dlp (загрузка с YouTube)",
-            "node": "Node.js",
             "claude": "Claude Code (сбор саммари)"
         ]
         for id in installedComponentIDs() {
